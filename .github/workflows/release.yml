@@ -1,4 +1,4 @@
-name: Build & Release Firmware
+name: Build and Release Firmware
 
 on:
   push:
@@ -15,8 +15,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Firmware
+  build-and-release:
+    name: Build & Release Firmware
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,7 +26,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
@@ -34,7 +33,7 @@ jobs:
           path: |
             ~/.platformio
             .pio
-          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+          key: ${{ runner.os }}-platformio-${{ hashFiles('**/platformio.ini') }}
           restore-keys: |
             ${{ runner.os }}-platformio-
 
@@ -43,22 +42,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio esptool
 
-      - name: Build Firmware (esp32-c3-usb)
+      - name: Build Firmware Targets
         run: |
           pio run -e esp32-c3-usb
+          pio run -e esp32-c3-ota
 
       - name: Package Firmware Binaries
         run: |
-          mkdir -p release_bin
+          mkdir -p release_assets
           BUILD_DIR=".pio/build/esp32-c3-usb"
 
-          cp "$BUILD_DIR/firmware.bin" release_bin/allskyradarview-ota.bin
-          cp "$BUILD_DIR/partitions.bin" release_bin/partitions.bin
-          cp "$BUILD_DIR/bootloader.bin" release_bin/bootloader.bin
+          cp "$BUILD_DIR/firmware.bin" release_assets/AllskyRadarView-firmware.bin
+          cp "$BUILD_DIR/partitions.bin" release_assets/partitions.bin
+          cp "$BUILD_DIR/bootloader.bin" release_assets/bootloader.bin
 
           # Merge into a single 0x0 flashable factory binary
           python -m esptool --chip esp32c3 merge_bin \
-            -o release_bin/allskyradarview-factory-merged.bin \
+            -o release_assets/AllskyRadarView-factory-merged.bin \
             --flash_mode qio \
             --flash_freq 80m \
             --flash_size 4MB \
@@ -66,37 +66,25 @@ jobs:
             0x8000 "$BUILD_DIR/partitions.bin" \
             0x10000 "$BUILD_DIR/firmware.bin"
 
-          ls -lh release_bin/
+          ls -lh release_assets/
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: allskyradarview-binaries
-          path: release_bin/*
-
-  release:
-    name: Publish GitHub Release
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download Build Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: allskyradarview-binaries
-          path: release_bin
+          name: AllskyRadarView-Firmware
+          path: release_assets/
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release_bin/allskyradarview-factory-merged.bin
-            release_bin/allskyradarview-ota.bin
-            release_bin/bootloader.bin
-            release_bin/partitions.bin
+            release_assets/AllskyRadarView-factory-merged.bin
+            release_assets/AllskyRadarView-firmware.bin
+            release_assets/bootloader.bin
+            release_assets/partitions.bin
           generate_release_notes: true
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
