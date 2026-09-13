@@ -7,6 +7,8 @@
 static esp_mqtt_client_handle_t s_mqttClient = nullptr;
 static uint8_t *s_incomingBuffer = nullptr;
 static uint32_t s_totalBytesExpected = 0;
+static uint8_t *s_activeImage = nullptr;
+static size_t s_activeImageLen = 0;
 static bool s_hasNewImage = false;
 static uint32_t s_imageCount = 0;
 static bool s_isConnected = false;
@@ -111,20 +113,18 @@ static void allsky_mqtt_handler(void *handler_args, esp_event_base_t base, int32
             if (event->current_data_offset + event->data_len == event->total_data_len) {
                 if (isOtaUpdating || !s_incomingBuffer) return;
 
-                Serial.printf("[ALLSKY MQTT] Complete frame received (%u bytes). Saving to LittleFS...\n", s_totalBytesExpected);
-                
-                // Save JPEG to LittleFS file to keep heap completely free
-                File f = LittleFS.open("/allsky_latest.jpg", "w");
-                if (f) {
-                    f.write(s_incomingBuffer, s_totalBytesExpected);
-                    f.flush();
-                    f.close();
-                    s_hasNewImage = true;
-                    s_imageCount++;
-                }
+                Serial.printf("[ALLSKY MQTT] Complete frame received in RAM (%u bytes). Free heap: %u\n", 
+                    s_totalBytesExpected, (unsigned int)ESP.getFreeHeap());
 
-                free(s_incomingBuffer);
+                if (s_activeImage) {
+                    free(s_activeImage);
+                }
+                s_activeImage = s_incomingBuffer;
+                s_activeImageLen = s_totalBytesExpected;
                 s_incomingBuffer = nullptr;
+
+                s_hasNewImage = true;
+                s_imageCount++;
 
                 // Format timestamp
                 time_t now = time(nullptr);
@@ -179,6 +179,11 @@ void AllskyEngine::stop() {
         free(s_incomingBuffer);
         s_incomingBuffer = nullptr;
     }
+    if (s_activeImage) {
+        free(s_activeImage);
+        s_activeImage = nullptr;
+        s_activeImageLen = 0;
+    }
 }
 
 bool AllskyEngine::hasNewImage() {
@@ -202,47 +207,57 @@ bool AllskyEngine::isConnected() {
 }
 
 bool AllskyEngine::render(LovyanGFX &gfx, const AppConfig &cfg) {
-    if (!LittleFS.exists("/allsky_latest.jpg")) {
-        // Render waiting screen
+    if (!s_activeImage || s_activeImageLen < 100) {
+        // Render sleek AllskyView connected/waiting screen
         gfx.startWrite();
         gfx.fillScreen(gfx.color565(8, 14, 24));
-        gfx.drawCircle(180, 180, 174, gfx.color565(0, 180, 255));
+        gfx.drawCircle(180, 180, 174, 0x1A8F);
 
-        gfx.setFont(&fonts::Font2);
         gfx.setTextDatum(textdatum_t::middle_center);
-        gfx.setTextColor(gfx.color565(0, 255, 200));
-        gfx.drawString("ALLSKY CAMERA", 180, 100);
 
-        gfx.fillRoundRect(180 - 100, 140, 200, 26, 6, gfx.color565(12, 24, 38));
-        gfx.drawRoundRect(180 - 100, 140, 200, 26, 6, gfx.color565(0, 180, 255));
-        gfx.setTextColor(gfx.color565(0, 220, 255));
-        gfx.drawString(cfg.mqtt_topic, 180, 153);
+        // Header
+        gfx.setFont(&fonts::Font2);
+        gfx.setTextColor(s_isConnected ? TFT_GREEN : gfx.color565(0, 210, 255));
+        gfx.drawString(s_isConnected ? "Allsky Connected" : "Connecting to MQTT...", 180, 95);
 
-        gfx.setTextColor(gfx.color565(180, 200, 220));
-        gfx.drawString(s_isConnected ? "Connected: Waiting for frame..." : "Connecting to MQTT...", 180, 220);
+        // Topic Pill Badge
+        {
+            gfx.setFont(&fonts::Font2);
+            int tw = gfx.textWidth(cfg.mqtt_topic);
+            int th = gfx.fontHeight();
+            int badgeY = 145;
+            gfx.fillRoundRect(180 - (tw / 2) - 12, badgeY - (th / 2) - 5, tw + 24, th + 10, 8, 0x10A2);
+            gfx.drawRoundRect(180 - (tw / 2) - 12, badgeY - (th / 2) - 5, tw + 24, th + 10, 8, 0x39E7);
+            gfx.setTextColor(TFT_CYAN);
+            gfx.drawString(cfg.mqtt_topic, 180, badgeY);
+        }
+
+        // IP Address Badge
+        {
+            String ipStr = "IP: " + WiFi.localIP().toString();
+            gfx.setFont(&fonts::Font2);
+            int ipW = gfx.textWidth(ipStr.c_str());
+            int ipH = gfx.fontHeight();
+            int ipY = 195;
+            gfx.fillRoundRect(180 - (ipW / 2) - 10, ipY - (ipH / 2) - 4, ipW + 20, ipH + 8, 6, 0x0841);
+            gfx.drawRoundRect(180 - (ipW / 2) - 10, ipY - (ipH / 2) - 4, ipW + 20, ipH + 8, 6, 0x2945);
+            gfx.setTextColor(0x9E79);
+            gfx.drawString(ipStr.c_str(), 180, ipY);
+        }
+
+        // Subtitle
+        gfx.setFont(&fonts::Font2);
+        gfx.setTextColor(TFT_WHITE);
+        gfx.drawString("Waiting for capture...", 180, 255);
         gfx.endWrite();
         return true;
     }
-
-    File f = LittleFS.open("/allsky_latest.jpg", "r");
-    if (!f) return false;
-
-    size_t fileSize = f.size();
-    if (fileSize < 100) {
-        f.close();
-        return false;
-    }
-
-    // Read header to parse dimensions
-    uint8_t hdr[1024];
-    size_t hdrRead = f.read(hdr, sizeof(hdr));
-    f.seek(0);
 
     uint16_t origW = 0, origH = 0;
     float scale = 1.0f;
     int drawX = 0, drawY = 0;
 
-    if (parseJpgDimensions(hdr, hdrRead, &origW, &origH) && origW > 0 && origH > 0) {
+    if (parseJpgDimensions(s_activeImage, s_activeImageLen, &origW, &origH) && origW > 0 && origH > 0) {
         scale = calculateDctScale(origW, origH, 360);
         int renderedW = (int)(origW * scale);
         int renderedH = (int)(origH * scale);
@@ -250,28 +265,47 @@ bool AllskyEngine::render(LovyanGFX &gfx, const AppConfig &cfg) {
         drawY = (360 - renderedH) / 2;
     }
 
-    gfx.startWrite();
-    gfx.fillScreen(gfx.color565(4, 8, 14));
+    // Format local time fallback if needed
+    char timeBuf[32] = "";
+    if (s_telemetry.hasTelemetry && s_telemetry.timestamp[0] != '\0') {
+        strncpy(timeBuf, s_telemetry.timestamp, sizeof(timeBuf) - 1);
+    } else {
+        time_t now = time(nullptr);
+        struct tm timeinfo;
+        if (localtime_r(&now, &timeinfo) && timeinfo.tm_year > (2020 - 1900)) {
+            strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &timeinfo);
+        }
+    }
 
-    // Decode directly from LittleFS stream
-    bool ok = gfx.drawJpg(&f, drawX, drawY, 0, 0, 0, 0, scale, scale);
-    f.close();
+    gfx.startWrite();
+    gfx.fillScreen(TFT_BLACK);
+
+    // Decode directly from RAM buffer (zero storage)
+    bool ok = gfx.drawJpg(s_activeImage, s_activeImageLen, drawX, drawY, 0, 0, 0, 0, scale, scale);
 
     if (ok) {
-        // Top Header Badge
-        gfx.setFont(&fonts::Font2);
+        // Top subtle label
         gfx.setTextDatum(textdatum_t::middle_center);
-        gfx.fillRoundRect(180 - 65, 18, 130, 22, 11, gfx.color565(10, 18, 28));
-        gfx.drawRoundRect(180 - 65, 18, 130, 22, 11, gfx.color565(0, 200, 255));
-        gfx.setTextColor(gfx.color565(0, 230, 255));
-        gfx.drawString("ALLSKY CAM", 180, 29);
+        gfx.setTextColor(0x7BEF);
+        gfx.setFont(&fonts::Font2);
+        gfx.drawString("ALLSKY", 180, 18);
 
-        // Bottom Capture Time Badge
-        if (s_telemetry.hasTelemetry && s_telemetry.timestamp[0] != '\0') {
-            gfx.fillRoundRect(180 - 65, 320, 130, 22, 11, gfx.color565(10, 18, 28));
-            gfx.drawRoundRect(180 - 65, 320, 130, 22, 11, gfx.color565(0, 255, 200));
-            gfx.setTextColor(gfx.color565(0, 255, 200));
-            gfx.drawString(s_telemetry.timestamp, 180, 331);
+        // Bottom timestamp badge
+        if (timeBuf[0] != '\0') {
+            gfx.setFont(&fonts::Font2);
+            int textW = gfx.textWidth(timeBuf);
+            int textH = gfx.fontHeight();
+
+            int badgeY = 328;
+            int badgeX = 180 - (textW / 2) - 14;
+            int badgeW = textW + 28;
+            int badgeH = textH + 8;
+
+            gfx.fillRoundRect(badgeX, badgeY - (textH / 2) - 4, badgeW, badgeH, 6, TFT_BLACK);
+            gfx.drawRoundRect(badgeX, badgeY - (textH / 2) - 4, badgeW, badgeH, 6, 0x5AEB);
+
+            gfx.setTextColor(TFT_CYAN);
+            gfx.drawString(timeBuf, 180, badgeY);
         }
     }
 
