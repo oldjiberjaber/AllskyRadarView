@@ -12,7 +12,7 @@
 #include <LovyanGFX.hpp>
 
 #define BOOT_BUTTON_PIN 9
-#define APP_VERSION "v1.0.0"
+#define APP_VERSION "v1.0.1"
 #define GITHUB_URL  "github.com/oldjiberjaber/AllskyRadarView"
 
 // ==========================================

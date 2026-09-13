@@ -76,7 +76,7 @@ static const char PORTAL_HTML[] PROGMEM = R"rawliteral(
   <div class="header">
     <h1>ALLSKY & RADAR VIEW</h1>
     <p>Unified Dual/Single Display Weather & Sky Scope</p>
-    <div class="badge">v1.0.0 &bull; Dual GC9B72 360x360 &bull; MQTT &bull; RainViewer</div>
+    <div class="badge">v1.0.1 &bull; Dual GC9B72 360x360 &bull; MQTT &bull; RainViewer</div>
   </div>
 
   <form action="/save" method="POST">
