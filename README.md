@@ -10,6 +10,15 @@ It bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar
 
 ---
 
+## 📷 Display Preview
+
+| Tactical Weather Radar Scope | Allsky Night Sky Camera View |
+|:---:|:---:|
+| ![Radar Scope](assets/radar_view.jpg) | ![Allsky Camera](assets/allsky_view.jpg) |
+| *Live RainViewer radar, Open-Meteo telemetry & wind vector HUD* | *MQTT Allsky camera feed with capture timestamp* |
+
+---
+
 ## 🌟 Key Features
 
 - 🖥️ **Flexible Multi-Display Modes**:
