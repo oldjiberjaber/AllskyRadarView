@@ -317,6 +317,7 @@ bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_
 
     gfx.startWrite();
     gfx.fillScreen(gfx.color565(8, 14, 24));
+    gfx.endWrite();
 
     // Decode coordinate-centered 512x512 PNG at (-76, -76) directly from file stream
     bool decoded = gfx.drawPng(&f, -76, -76);
@@ -326,10 +327,12 @@ bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_
         Serial.printf("[RADAR] Warning: PNG decode error on frame %u\n", frameIdx);
     }
 
-    // Overlay tactical HUD, telemetry, and frame progress indicators
+    // Explicitly reset clip rectangle in case PNG decoder altered it
+    gfx.clearClipRect();
+
+    // Overlay tactical HUD, telemetry, and frame progress indicators with isolated transaction
     drawTacticalOverlay(gfx, cfg, s_frameMeta[frameIdx], s_latestTelemetry, frameIdx, s_totalFrames);
 
-    gfx.endWrite();
     return decoded;
 }
 
@@ -376,6 +379,9 @@ void RadarFetcher::drawWindVector(LovyanGFX &gfx, int cx, int cy, int radius, in
 }
 
 void RadarFetcher::drawTacticalOverlay(LovyanGFX &gfx, const AppConfig &cfg, const RadarFrameInfo &frameInfo, const WeatherTelemetry &telemetry, uint8_t frameIdx, uint8_t totalFrames) {
+    gfx.startWrite();
+    gfx.clearClipRect();
+
     const int cx = 180;
     const int cy = 180;
 
@@ -514,6 +520,8 @@ void RadarFetcher::drawTacticalOverlay(LovyanGFX &gfx, const AppConfig &cfg, con
         }
         gfx.drawString(bottomBadge, cx, 316);
     }
+
+    gfx.endWrite();
 }
 
 void RadarFetcher::drawRadarLegend(LovyanGFX &gfx, uint8_t product) {

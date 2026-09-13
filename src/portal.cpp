@@ -85,16 +85,20 @@ static const char PORTAL_HTML[] PROGMEM = R"rawliteral(
       <div class="card-title" style="color:var(--accent);">🖥️ Display & Operating Mode</div>
       <div class="form-group">
         <label>Hardware Configuration & Screen Routing</label>
-        <select name="mode" id="mode" onchange="updateModeUI()">
-          <option value="0" {{MODE_0}}>✨ Dual Screens (Screen 1: Allsky, Screen 2: Radar)</option>
-          <option value="1" {{MODE_1}}>🌧️ Single Screen: Radar Only</option>
-          <option value="2" {{MODE_2}}>🌌 Single Screen: Allsky Camera Only</option>
-          <option value="3" {{MODE_3}}>🔄 Single Screen: Timed Carousel (Allsky & Radar)</option>
-        </select>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <select name="mode" id="mode" onchange="updateModeUI()" style="flex:1;">
+            <option value="0" {{MODE_0}}>✨ Dual Screens (Screen 1: Allsky, Screen 2: Radar)</option>
+            <option value="1" {{MODE_1}}>🌧️ Single Screen: Radar Only</option>
+            <option value="2" {{MODE_2}}>🌌 Single Screen: Allsky Camera Only</option>
+            <option value="3" {{MODE_3}}>🔄 Single Screen: Timed Carousel (Allsky & Radar)</option>
+          </select>
+          <button type="button" id="btn-apply-mode" class="btn" style="width:auto; padding:10px 16px; margin:0; white-space:nowrap; background:linear-gradient(135deg, #00f2a0, #00b0ff); color:#000; font-weight:700;" onclick="applyModeQuick()">⚡ Switch</button>
+        </div>
+        <div id="mode-status" style="font-size:12px; color:#00f2a0; margin-top:6px; min-height:16px; text-align:right;"></div>
       </div>
       <div class="form-group" id="carousel-group" style="display:none;">
         <label>Carousel Switch Interval (Seconds)</label>
-        <input type="number" name="car_int" min="5" max="300" value="{{CAR_INT}}">
+        <input type="number" name="car_int" id="car_int" min="5" max="300" value="{{CAR_INT}}">
       </div>
     </div>
 
@@ -484,6 +488,34 @@ function applyLayerQuick() {
       status.innerText = 'Error applying layer';
     });
 }
+
+function applyModeQuick() {
+  var mode = document.getElementById('mode').value;
+  var carIntInput = document.getElementById('car_int');
+  var carInt = carIntInput ? carIntInput.value : 30;
+  var btn = document.getElementById('btn-apply-mode');
+  var status = document.getElementById('mode-status');
+  btn.innerText = 'Switching...';
+  btn.disabled = true;
+  status.innerText = 'Updating display mode...';
+  fetch('/switch-mode?mode=' + mode + '&car_int=' + carInt, { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      btn.innerText = '✓ Applied';
+      var modeNames = ['Dual Screens', 'Radar Only', 'Allsky Only', 'Timed Carousel'];
+      status.innerText = '✓ Switched to ' + (modeNames[parseInt(mode)] || 'Selected Mode');
+      setTimeout(() => {
+        btn.innerText = '⚡ Switch';
+        btn.disabled = false;
+        status.innerText = '';
+      }, 2500);
+    })
+    .catch(() => {
+      btn.innerText = '⚡ Switch';
+      btn.disabled = false;
+      status.innerText = 'Error switching mode';
+    });
+}
 </script>
 </body>
 </html>
@@ -492,6 +524,7 @@ function applyLayerQuick() {
 void Portal::setupRoutes() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/save", HTTP_POST, handleSave);
+    server.on("/switch-mode", HTTP_ANY, handleSwitchMode);
     server.on("/switch-layer", HTTP_ANY, handleSwitchLayer);
     server.on("/scan", HTTP_GET, handleScan);
     server.on("/restart", HTTP_POST, handleRestart);
@@ -702,6 +735,26 @@ bool Portal::isLiveRefreshRequested() {
     bool r = pendingLiveRefresh;
     pendingLiveRefresh = false;
     return r;
+}
+
+void Portal::handleSwitchMode() {
+    if (!activeConfig) {
+        server.send(500, "application/json", "{\"status\":\"error\"}");
+        return;
+    }
+    if (server.hasArg("mode")) {
+        activeConfig->display_mode = server.arg("mode").toInt();
+        if (server.hasArg("car_int")) {
+            activeConfig->carousel_interval_sec = server.arg("car_int").toInt();
+        }
+        ConfigManager::save(*activeConfig);
+        pendingLiveRefresh = true;
+        const char* modeNames[] = {"Dual Screens", "Radar Only", "Allsky Only", "Timed Carousel"};
+        int m = activeConfig->display_mode;
+        const char* name = (m >= 0 && m <= 3) ? modeNames[m] : "Unknown";
+        Serial.printf("[PORTAL] Quick switched display mode to: %d (%s)\n", m, name);
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\",\"mode\":" + String(activeConfig->display_mode) + "}");
 }
 
 void Portal::handleSwitchLayer() {

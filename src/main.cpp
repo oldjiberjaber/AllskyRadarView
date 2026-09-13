@@ -23,28 +23,14 @@ AppConfig appConfig;
 // ==========================================
 // 2. LovyanGFX Configuration for Dual GC9B72 360x360
 // ==========================================
+static lgfx::Bus_SPI s_shared_bus;
+
 class LGFX_Screen : public lgfx::LGFX_Device {
     lgfx::Panel_GC9B72 _panel_instance;
-    lgfx::Bus_SPI      _bus_instance;
     lgfx::Light_PWM    _light_instance;
 
 public:
     LGFX_Screen(int cs_pin, int rst_pin = -1, int bl_pin = -1, int pwm_chan = 0) {
-        {
-            auto cfg = _bus_instance.config();
-            cfg.spi_host   = SPI2_HOST;       // ESP32-C3 FSPI
-            cfg.spi_mode   = 0;               // SPI mode 0
-            cfg.freq_write = 80000000;        // 80 MHz high-speed SPI clock
-            cfg.freq_read  = 16000000;
-            cfg.pin_sclk   = 4;               // SCLK = GPIO 4
-            cfg.pin_mosi   = 3;               // MOSI = GPIO 3
-            cfg.pin_miso   = -1;              // Not connected
-            cfg.pin_dc     = 10;              // DC = GPIO 10
-            cfg.dma_channel = SPI_DMA_CH_AUTO; // Hardware DMA channel
-            _bus_instance.config(cfg);
-            _panel_instance.setBus(&_bus_instance);
-        }
-
         {
             auto cfg = _panel_instance.config();
             cfg.pin_cs           = cs_pin;    // Screen 1: GPIO 1, Screen 2: GPIO 2
@@ -67,6 +53,8 @@ public:
             _panel_instance.config(cfg);
         }
 
+        _panel_instance.setBus(&s_shared_bus);
+
         if (bl_pin >= 0) {
             auto cfg = _light_instance.config();
             cfg.pin_bl      = bl_pin;         // BLK = GPIO 5
@@ -78,6 +66,20 @@ public:
         }
 
         setPanel(&_panel_instance);
+    }
+
+    static void initBus() {
+        auto cfg = s_shared_bus.config();
+        cfg.spi_host   = SPI2_HOST;       // ESP32-C3 FSPI
+        cfg.spi_mode   = 0;               // SPI mode 0
+        cfg.freq_write = 80000000;        // 80 MHz high-speed SPI clock
+        cfg.freq_read  = 16000000;
+        cfg.pin_sclk   = 4;               // SCLK = GPIO 4
+        cfg.pin_mosi   = 3;               // MOSI = GPIO 3
+        cfg.pin_miso   = -1;              // Not connected
+        cfg.pin_dc     = 10;              // DC = GPIO 10
+        cfg.dma_channel = SPI_DMA_CH_AUTO; // Hardware DMA channel
+        s_shared_bus.config(cfg);
     }
 };
 
@@ -254,18 +256,22 @@ void setup() {
 
     pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
 
-    // Initialize Displays
+    // Load saved settings
+    ConfigManager::load(appConfig);
+
+    // Initialize Shared Bus & Displays
+    LGFX_Screen::initBus();
+
     gfx_screen1.init();
     gfx_screen1.setRotation(0);
     gfx_screen1.setColorDepth(16);
-
-    gfx_screen2.init();
-    gfx_screen2.setRotation(0);
-    gfx_screen2.setColorDepth(16);
-
-    // Load saved settings
-    ConfigManager::load(appConfig);
     gfx_screen1.setBrightness(appConfig.brightness);
+
+    if (appConfig.display_mode == MODE_DUAL_DISPLAY) {
+        gfx_screen2.init();
+        gfx_screen2.setRotation(0);
+        gfx_screen2.setColorDepth(16);
+    }
 
     // Set local timezone
     setenv("TZ", appConfig.timezone, 1);
@@ -363,7 +369,7 @@ void loop() {
     // Check for live configuration updates from Web Portal
     if (Portal::isLiveRefreshRequested()) {
         const char* pName = (appConfig.data_product == 1) ? "IR SATELLITE" : "PRECIP RADAR";
-        Serial.printf("[PORTAL] Configuration updated! Switching live to: %s\n", pName);
+        Serial.printf("[PORTAL] Configuration updated! Switching live to: %s (Mode: %d)\n", pName, appConfig.display_mode);
         gfx_screen1.setBrightness(appConfig.brightness);
 
         // Reconnect MQTT if needed
@@ -373,8 +379,17 @@ void loop() {
             AllskyEngine::stop();
         }
 
+        lastCarouselSwitch = millis();
+        currentCarouselPhase = PHASE_RADAR;
+
         needRadarRefresh = true;
         needAllskyRefresh = true;
+
+        if (appConfig.display_mode == MODE_SINGLE_RADAR && RadarFetcher::getFrameCount() > 0) {
+            RadarFetcher::renderFrameIndex(gfx_screen1, appConfig, currentAnimFrame);
+        } else if (appConfig.display_mode == MODE_SINGLE_ALLSKY) {
+            AllskyEngine::render(gfx_screen1, appConfig);
+        }
     }
 
     // Check Hardware Button (GPIO 9)
@@ -404,6 +419,9 @@ void loop() {
                 if (appConfig.display_mode == MODE_SINGLE_CAROUSEL) {
                     currentCarouselPhase = (currentCarouselPhase == PHASE_RADAR) ? PHASE_ALLSKY : PHASE_RADAR;
                     lastCarouselSwitch = millis();
+                    if (currentCarouselPhase == PHASE_RADAR && RadarFetcher::getFrameCount() > 0) {
+                        RadarFetcher::renderFrameIndex(gfx_screen1, appConfig, currentAnimFrame);
+                    }
                 }
             }
         }
@@ -446,7 +464,11 @@ void loop() {
                 lastCarouselSwitch = now;
                 currentCarouselPhase = (currentCarouselPhase == PHASE_RADAR) ? PHASE_ALLSKY : PHASE_RADAR;
                 Serial.printf("[CAROUSEL] Switched phase to: %s\n", (currentCarouselPhase == PHASE_RADAR) ? "RADAR" : "ALLSKY");
-                if (currentCarouselPhase == PHASE_ALLSKY) needAllskyRefresh = true;
+                if (currentCarouselPhase == PHASE_ALLSKY) {
+                    needAllskyRefresh = true;
+                } else if (RadarFetcher::getFrameCount() > 0) {
+                    RadarFetcher::renderFrameIndex(gfx_screen1, appConfig, currentAnimFrame);
+                }
             }
 
             if (currentCarouselPhase == PHASE_RADAR) {

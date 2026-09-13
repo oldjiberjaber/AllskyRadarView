@@ -18,6 +18,7 @@ private:
     static void setupRoutes();
     static void handleRoot();
     static void handleSave();
+    static void handleSwitchMode();
     static void handleSwitchLayer();
     static void handleScan();
     static void handleRestart();

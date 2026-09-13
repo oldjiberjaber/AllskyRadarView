@@ -5,4 +5,5 @@
 *.elf
 *.hex
 release_assets/
-
+release_bin/
+*.code-workspace
