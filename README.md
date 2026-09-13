@@ -89,6 +89,123 @@ pio run -e esp32-c3-ota -t upload
 
 ---
 
+## 📡 Allsky Camera MQTT Configuration
+
+AllskyRadarView connects directly to your MQTT broker to subscribe to and display live exposures as raw binary JPEG payloads:
+
+| Configuration Field | Description | Default / Example |
+|---|---|---|
+| **MQTT Broker Host / IP** | Hostname or IP address of your MQTT broker | `192.168.0.6` |
+| **Port** | MQTT TCP port | `1883` |
+| **MQTT Image Topic** | Subscribed topic broadcasting the 360×360 binary JPEG | `allsky/image/thumbnail` or `indi-allsky/thumbnail` |
+| **MQTT Username** | Optional authentication username | *(optional)* |
+| **MQTT Password** | Optional authentication password | *(optional)* |
+
+---
+
+## 🔭 Allsky 360×360 Thumbnail MQTT Pipeline
+
+This setup automatically generates a square 360×360 thumbnail on every completed exposure and publishes the binary payload to an MQTT broker for consumption by AllskyRadarView, Home Assistant, and downstream dashboards.
+
+### Overview
+
+1. **Trigger:** `indi-allsky` runs an **Image Post-Save Hook** immediately after a new image exposure is processed and saved.
+2. **Transform:** A local bash script uses ImageMagick (`convert`) to center-crop and scale the newly captured image down to 360×360 pixels.
+3. **Publish:** The script uses `mosquitto_pub` to broadcast the raw binary JPEG directly to a dedicated MQTT topic.
+
+### Prerequisites
+
+```bash
+sudo apt-get update
+sudo apt-get install -y imagemagick mosquitto-clients
+```
+
+### 1. Processing Script
+
+Create `/usr/local/bin/resize_allsky_360.sh`:
+
+```bash
+#!/bin/bash
+set -e
+
+# Input file path passed by indi-allsky ($1) or fallback to latest image
+INPUT_FILE="${1:-/var/www/html/allsky/images/latest.jpg}"
+OUTPUT_DIR="/var/www/html/allsky"
+OUTPUT_FILE="${OUTPUT_DIR}/image-360.jpg"
+
+# MQTT Broker Configuration
+BROKER_IP="<BROKER_IP>"
+BROKER_PORT="1883"
+MQTT_TOPIC="allsky/image/thumbnail"
+# Optional auth:
+# MQTT_USER="<USER>"
+# MQTT_PASS="<PASSWORD>"
+
+# Ensure input file exists before running
+if [ ! -f "$INPUT_FILE" ]; then
+    exit 0
+fi
+
+# Scale and center-crop to 360x360 JPEG
+convert "$INPUT_FILE" \
+    -resize 360x360^ \
+    -gravity center \
+    -extent 360x360 \
+    -quality 85 \
+    "$OUTPUT_FILE"
+
+# Publish binary JPEG to MQTT broker
+# Add -u "$MQTT_USER" -P "$MQTT_PASS" if authentication is enabled
+mosquitto_pub \
+    -h "$BROKER_IP" \
+    -p "$BROKER_PORT" \
+    -t "$MQTT_TOPIC" \
+    -f "$OUTPUT_FILE"
+```
+
+Make the script executable:
+
+```bash
+sudo chmod 755 /usr/local/bin/resize_allsky_360.sh
+```
+
+### 2. indi-allsky Hook Configuration
+
+1. In the **indi-allsky Web UI**, navigate to the active camera profile settings.
+2. Locate the **Image Post-Save Hook** field.
+3. Set the value to:
+   ```text
+   /usr/local/bin/resize_allsky_360.sh
+   ```
+4. Save and apply changes.
+
+### 3. MQTT Payload & Consumption
+
+* **Topic:** `allsky/image/thumbnail`
+* **Payload Type:** Raw binary JPEG
+* **Dimensions:** 360 × 360 px
+* **Update Frequency:** Real-time on every exposure completion
+
+**Verification via CLI:**
+
+```bash
+mosquitto_sub -h <BROKER_IP> -t "allsky/image/thumbnail" -C 1 > /tmp/test_thumb.jpg
+file /tmp/test_thumb.jpg
+# Expected output: JPEG image data, ... 360x360
+```
+
+**Home Assistant Consumer Definition (`configuration.yaml`):**
+
+```yaml
+mqtt:
+  image:
+    - name: "Allsky 360 Thumbnail"
+      image_topic: "allsky/image/thumbnail"
+      content_type: "image/jpeg"
+```
+
+---
+
 ## 🛠️ Architecture & Memory Strategy
 
 The ESP32-C3 features ~320 KB SRAM. Decoding full PNG and JPEG images simultaneously requires strict memory architecture:
