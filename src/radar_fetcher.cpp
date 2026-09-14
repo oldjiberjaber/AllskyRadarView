@@ -258,6 +258,83 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
     return true;
 }
 
+#include <lgfx/utility/lgfx_pngle.h>
+
+struct OwmPngContext {
+    File *file;
+    LovyanGFX *gfx;
+    int base_x;
+    int base_y;
+};
+
+static uint32_t owm_png_read_cb(void *user_data, uint8_t *buf, uint32_t len) {
+    OwmPngContext *ctx = (OwmPngContext*)user_data;
+    if (!ctx || !ctx->file) return 0;
+    if (buf == nullptr) {
+        ctx->file->seek(ctx->file->position() + len);
+        return len;
+    }
+    return ctx->file->read(buf, len);
+}
+
+static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_t div_x, size_t len, const uint8_t* argb) {
+    OwmPngContext *ctx = (OwmPngContext*)user_data;
+    int screen_y = ctx->base_y + (int)y;
+    if (screen_y < 0 || screen_y >= 360) return;
+
+    for (size_t i = 0; i < len; i++) {
+        int screen_x = ctx->base_x + (int)x + (int)(i * div_x);
+        if (screen_x >= 0 && screen_x < 360) {
+            uint8_t a = argb[i * 4 + 0]; // Alpha channel contains the cloud density (0 to 255)
+            if (a > 6) {
+                uint8_t r, g, b;
+                if (a < 50) {
+                    // Thin cloud haze: soft slate blue
+                    r = (uint8_t)(35 + a * 0.7f);
+                    g = (uint8_t)(55 + a * 0.9f);
+                    b = (uint8_t)(85 + a * 1.1f);
+                } else if (a < 160) {
+                    // Medium cloud: silvery white-blue
+                    r = (uint8_t)(70 + (a - 50) * 0.95f);
+                    g = (uint8_t)(100 + (a - 50) * 0.90f);
+                    b = (uint8_t)(140 + (a - 50) * 0.75f);
+                } else {
+                    // Dense cloud / overcast: brilliant pure white/silver
+                    uint8_t val = (uint8_t)(175 + (a - 160) * 0.84f);
+                    r = val;
+                    g = val;
+                    b = (val < 245) ? (val + 10) : 255;
+                }
+                ctx->gfx->writePixel(screen_x, screen_y, ctx->gfx->color565(r, g, b));
+            }
+        }
+    }
+}
+
+static bool renderOwmCloudTile(LovyanGFX &gfx, File &f, int px, int py) {
+    pngle_t *pngle = lgfx_pngle_new();
+    if (!pngle) return false;
+
+    OwmPngContext ctx;
+    ctx.file = &f;
+    ctx.gfx = &gfx;
+    ctx.base_x = px;
+    ctx.base_y = py;
+
+    int prep = lgfx_pngle_prepare(pngle, owm_png_read_cb, &ctx);
+    if (prep < 0) {
+        lgfx_pngle_destroy(pngle);
+        return false;
+    }
+
+    gfx.startWrite();
+    int res = lgfx_pngle_decomp(pngle, owm_png_draw_cb);
+    gfx.endWrite();
+
+    lgfx_pngle_destroy(pngle);
+    return (res >= 0);
+}
+
 bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame) {
     if (strlen(cfg.owm_api_key) == 0) {
         Serial.println("[CLOUDS] No OpenWeatherMap API key provided!");
@@ -323,9 +400,10 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
             if (downloadTileToFile(String(url), tempPath)) {
                 File f = LittleFS.open(tempPath, "r");
                 if (f) {
-                    gfx.drawPng(&f, px, py);
+                    if (renderOwmCloudTile(gfx, f, px, py)) {
+                        downloaded++;
+                    }
                     f.close();
-                    downloaded++;
                 }
                 LittleFS.remove(tempPath);
             }
@@ -337,6 +415,7 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
 
     return (downloaded > 0);
 }
+
 
 bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &statusMsg) {
     initFS();
