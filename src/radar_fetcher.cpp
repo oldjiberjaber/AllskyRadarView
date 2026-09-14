@@ -260,25 +260,45 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
 
 #include <lgfx/utility/lgfx_pngle.h>
 
-struct OwmPngContext {
+struct OwmFileDataWrapper : public lgfx::DataWrapper {
     File *file;
-    LovyanGFX *gfx;
-    int base_x;
-    int base_y;
+    OwmFileDataWrapper(File *f) : file(f) {}
+    int read(uint8_t *buf, uint32_t len) override {
+        return file ? file->read(buf, len) : 0;
+    }
+    void skip(int32_t offset) override {
+        if (file) file->seek(file->position() + offset);
+    }
+    bool seek(uint32_t offset) override {
+        return file ? file->seek(offset) : false;
+    }
+    void close() override {
+        if (file) file->close();
+    }
+    int32_t tell() override {
+        return file ? file->position() : 0;
+    }
 };
 
-static uint32_t owm_png_read_cb(void *user_data, uint8_t *buf, uint32_t len) {
-    OwmPngContext *ctx = (OwmPngContext*)user_data;
-    if (!ctx || !ctx->file) return 0;
-    if (buf == nullptr) {
-        ctx->file->seek(ctx->file->position() + len);
-        return len;
+struct OwmPngDecoder {
+    lgfx::DataWrapper* data;
+    LovyanGFX* gfx;
+    int base_x;
+    int base_y;
+
+    static uint32_t read_data(void* self, uint8_t* buf, uint32_t len) {
+        auto d = ((OwmPngDecoder*)self)->data;
+        if (buf) {
+            return d->read(buf, len);
+        } else {
+            d->skip(len);
+            return len;
+        }
     }
-    return ctx->file->read(buf, len);
-}
+};
 
 static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_t div_x, size_t len, const uint8_t* argb) {
-    OwmPngContext *ctx = (OwmPngContext*)user_data;
+    OwmPngDecoder *ctx = (OwmPngDecoder*)user_data;
     int screen_y = ctx->base_y + (int)y;
     if (screen_y < 0 || screen_y >= 360) return;
 
@@ -312,17 +332,23 @@ static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_
 }
 
 static bool renderOwmCloudTile(LovyanGFX &gfx, File &f, int px, int py) {
+    OwmFileDataWrapper wrapper(&f);
+
     pngle_t *pngle = lgfx_pngle_new();
-    if (!pngle) return false;
+    if (!pngle) {
+        Serial.println("[CLOUDS] Failed to allocate pngle");
+        return false;
+    }
 
-    OwmPngContext ctx;
-    ctx.file = &f;
-    ctx.gfx = &gfx;
-    ctx.base_x = px;
-    ctx.base_y = py;
+    OwmPngDecoder dec;
+    dec.data = &wrapper;
+    dec.gfx = &gfx;
+    dec.base_x = px;
+    dec.base_y = py;
 
-    int prep = lgfx_pngle_prepare(pngle, owm_png_read_cb, &ctx);
+    int prep = lgfx_pngle_prepare(pngle, OwmPngDecoder::read_data, &dec);
     if (prep < 0) {
+        Serial.printf("[CLOUDS] lgfx_pngle_prepare failed: %d\n", prep);
         lgfx_pngle_destroy(pngle);
         return false;
     }
@@ -332,8 +358,14 @@ static bool renderOwmCloudTile(LovyanGFX &gfx, File &f, int px, int py) {
     gfx.endWrite();
 
     lgfx_pngle_destroy(pngle);
-    return (res >= 0);
+
+    if (res < 0) {
+        Serial.printf("[CLOUDS] lgfx_pngle_decomp failed: %d\n", res);
+        return false;
+    }
+    return true;
 }
+
 
 bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame) {
     if (strlen(cfg.owm_api_key) == 0) {
