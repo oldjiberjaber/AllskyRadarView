@@ -26,10 +26,11 @@ It bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar
   - **Single Radar**: Single display dedicated to full radar motion loop and weather scope.
   - **Single Allsky**: Single display dedicated to the MQTT Allsky Camera feed.
   - **Timed Carousel**: Single display smoothly alternating between Allsky and Radar every *N* seconds (configurable from 5s to 300s).
-- 🌧️ **Live Radar & Satellite Motion Loop**:
+- 🌧️ **Live Radar & Satellite Cloud Coverage**:
   - Multi-frame history animation (3, 5, or 8 frames covering 20–80 minutes of storm motion).
-  - Stream-decoded via LittleFS with **zero heap fragmentation** and full DMA acceleration.
-  - Switch on-the-fly between **Precipitation Radar** and **Infrared Satellite Cloud Cover**.
+  - Stream-decoded via LittleFS and LovyanGFX PNGLE with **zero heap fragmentation** and full DMA acceleration.
+  - Switch on-the-fly between **RainViewer Precipitation Radar** and **OpenWeatherMap Satellite Cloud Coverage** with density-mapped silvery cloud gradient rendering.
+  - Persistent LittleFS grid caching for zero-latency, zero-API-cost screen switches in Carousel mode.
 - 🧭 **Tactical Weather Telemetry**:
   - Real-time temperature, humidity, and 16-point cardinal wind speed & direction (`SW`, `ENE`, `NNE`) from Open-Meteo.
   - Compass needle vector on the radar scope.

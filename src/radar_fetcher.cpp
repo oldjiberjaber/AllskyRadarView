@@ -177,14 +177,14 @@ void RadarFetcher::cleanupCache() {
     for (int i = 0; i < MAX_RADAR_FRAMES; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/radar_%d.png", i);
-        if (LittleFS.exists(p)) LittleFS.remove(p);
+        LittleFS.remove(p);
     }
     for (int i = 0; i < 4; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/owm_%d.png", i);
-        if (LittleFS.exists(p)) LittleFS.remove(p);
+        LittleFS.remove(p);
     }
-    if (LittleFS.exists("/owm_tile.png")) LittleFS.remove("/owm_tile.png");
+    LittleFS.remove("/owm_tile.png");
 }
 
 bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
@@ -197,6 +197,7 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
     http.setConnectTimeout(6000);
     http.setTimeout(10000);
     http.setReuse(false);
+    http.useHTTP10(true);
 
     Serial.printf("[RADAR] Downloading Tile to %s: %s (Free Heap: %u bytes)\n", filePath, url.c_str(), (unsigned int)ESP.getFreeHeap());
     if (!http.begin(client, url)) {
@@ -209,10 +210,6 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
         Serial.printf("[RADAR] Tile download error: %d (%s)\n", httpCode, http.errorToString(httpCode).c_str());
         http.end();
         return false;
-    }
-
-    if (LittleFS.exists(filePath)) {
-        LittleFS.remove(filePath);
     }
 
     File f = LittleFS.open(filePath, "w");
@@ -260,35 +257,33 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
 
 #include <lgfx/utility/lgfx_pngle.h>
 
-struct OwmMemDecoder {
-    const uint8_t* buf;
-    size_t len;
-    size_t pos;
+struct OwmStreamDecoder {
+    Stream* stream;
     LovyanGFX* gfx;
     int base_x;
     int base_y;
 
     static uint32_t read_data(void* self, uint8_t* out_buf, uint32_t req_len) {
-        auto d = (OwmMemDecoder*)self;
-        if (!d || !d->buf) return 0;
+        auto d = (OwmStreamDecoder*)self;
+        if (!d || !d->stream) return 0;
         if (out_buf) {
-            size_t avail = (d->pos < d->len) ? (d->len - d->pos) : 0;
-            size_t to_copy = (req_len < avail) ? req_len : avail;
-            if (to_copy > 0) {
-                memcpy(out_buf, d->buf + d->pos, to_copy);
-                d->pos += to_copy;
-            }
-            return to_copy;
+            return d->stream->readBytes((char*)out_buf, req_len);
         } else {
-            d->pos += req_len;
-            if (d->pos > d->len) d->pos = d->len;
-            return req_len;
+            uint8_t dummy[64];
+            size_t skipped = 0;
+            while (skipped < req_len) {
+                size_t to_read = (req_len - skipped < sizeof(dummy)) ? (req_len - skipped) : sizeof(dummy);
+                size_t r = d->stream->readBytes((char*)dummy, to_read);
+                if (r == 0) break;
+                skipped += r;
+            }
+            return skipped;
         }
     }
 };
 
 static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_t div_x, size_t len, const uint8_t* argb) {
-    OwmMemDecoder *ctx = (OwmMemDecoder*)user_data;
+    OwmStreamDecoder *ctx = (OwmStreamDecoder*)user_data;
     int screen_y = ctx->base_y + (int)y;
     if (screen_y < 0 || screen_y >= 360) return;
 
@@ -321,48 +316,11 @@ static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_
     }
 }
 
-static bool renderOwmCloudTileMem(LovyanGFX &gfx, const uint8_t *imgBuf, size_t imgLen, int px, int py) {
-    pngle_t *pngle = lgfx_pngle_new();
-    if (!pngle) {
-        Serial.println("[CLOUDS] Failed to allocate pngle");
-        return false;
-    }
-
-    OwmMemDecoder dec;
-    dec.buf = imgBuf;
-    dec.len = imgLen;
-    dec.pos = 0;
-    dec.gfx = &gfx;
-    dec.base_x = px;
-    dec.base_y = py;
-
-    int prep = lgfx_pngle_prepare(pngle, OwmMemDecoder::read_data, &dec);
-    if (prep < 0) {
-        Serial.printf("[CLOUDS] lgfx_pngle_prepare failed: %d\n", prep);
-        lgfx_pngle_destroy(pngle);
-        return false;
-    }
-
-    gfx.startWrite();
-    int res = lgfx_pngle_decomp(pngle, owm_png_draw_cb);
-    gfx.endWrite();
-
-    lgfx_pngle_destroy(pngle);
-
-    if (res < 0) {
-        Serial.printf("[CLOUDS] lgfx_pngle_decomp failed: %d\n", res);
-        return false;
-    }
-    return true;
-}
-
 bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame) {
     if (strlen(cfg.owm_api_key) == 0) {
         Serial.println("[CLOUDS] No OpenWeatherMap API key provided!");
         return false;
     }
-
-    cleanupCache();
 
     double latRad = (double)cfg.latitude * 0.017453292519943295;
     double n = pow(2.0, (double)cfg.zoom);
@@ -393,24 +351,14 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
     localtime_r(&rawtime, &frame_tm);
     snprintf(outFrame.formatted_time, sizeof(outFrame.formatted_time), "%02d:%02d", frame_tm.tm_hour, frame_tm.tm_min);
 
-    Serial.printf("[CLOUDS] Fetching 2x2 OpenWeatherMap Cloud Tiles (Zoom %u, Origin: %d,%d)...\n", 
-        cfg.zoom, startDrawX, startDrawY);
-
-    gfx.startWrite();
-    gfx.fillScreen(gfx.color565(8, 14, 24));
-    gfx.endWrite();
+    Serial.printf("[CLOUDS] Fetching 2x2 OpenWeatherMap Cloud Tiles (Zoom %u, Origin: %d,%d, Free Heap: %u)...\n", 
+        cfg.zoom, startDrawX, startDrawY, (unsigned int)ESP.getFreeHeap());
 
     uint8_t downloaded = 0;
-
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient http;
-    http.setConnectTimeout(6000);
-    http.setTimeout(10000);
-    http.setReuse(false);
+    int tileIdx = 0;
 
     for (int dy = 0; dy < 2; dy++) {
-        for (int dx = 0; dx < 2; dx++) {
+        for (int dx = 0; dx < 2; dx++, tileIdx++) {
             int tX = startTileX + dx;
             int tY = startTileY + dy;
             int px = startDrawX + dx * 256;
@@ -424,70 +372,17 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
             snprintf(url, sizeof(url), "https://tile.openweathermap.org/map/clouds_new/%u/%d/%d.png?appid=%s",
                 cfg.zoom, tX, tY, cfg.owm_api_key);
 
-            Serial.printf("[CLOUDS] Querying Tile (%d,%d) at pos (%d,%d)...\n", tX, tY, px, py);
+            char filePath[32];
+            snprintf(filePath, sizeof(filePath), "/owm_%d.png", tileIdx);
 
-            if (!http.begin(client, url)) {
-                Serial.println("[CLOUDS] HTTP begin failed");
-                continue;
+            if (downloadTileToFile(String(url), filePath)) {
+                downloaded++;
             }
-
-            int httpCode = http.GET();
-            if (httpCode != HTTP_CODE_OK) {
-                Serial.printf("[CLOUDS] HTTP GET failed: %d (%s)\n", httpCode, http.errorToString(httpCode).c_str());
-                http.end();
-                continue;
-            }
-
-            size_t bufCapacity = 65536; // 64 KB buffer for 256x256 PNG
-            uint8_t *imgBuf = (uint8_t*)malloc(bufCapacity);
-            if (!imgBuf) {
-                Serial.println("[CLOUDS] Failed to allocate RAM buffer for tile");
-                http.end();
-                continue;
-            }
-
-            WiFiClient *stream = http.getStreamPtr();
-            size_t totalRead = 0;
-            unsigned long startMs = millis();
-
-            while ((http.connected() || stream->available()) && (millis() - startMs < 8000)) {
-                size_t avail = stream->available();
-                if (avail > 0) {
-                    size_t toRead = (avail > (bufCapacity - totalRead)) ? (bufCapacity - totalRead) : avail;
-                    if (toRead == 0) break; // Buffer full
-                    int r = stream->read(imgBuf + totalRead, toRead);
-                    if (r > 0) {
-                        totalRead += r;
-                        startMs = millis();
-                    }
-                } else {
-                    delay(5);
-                }
-            }
-            http.end();
-
-            if (totalRead >= 500) {
-                Serial.printf("[CLOUDS] Downloaded %u bytes in RAM. Decoding...\n", (unsigned int)totalRead);
-                if (renderOwmCloudTileMem(gfx, imgBuf, totalRead, px, py)) {
-                    downloaded++;
-                    Serial.printf("[CLOUDS] Tile rendered successfully at (%d,%d)!\n", px, py);
-                }
-            } else {
-                Serial.printf("[CLOUDS] Download failed or too small: %u bytes\n", (unsigned int)totalRead);
-            }
-
-            free(imgBuf);
-
         }
     }
 
-    gfx.clearClipRect();
-    drawTacticalOverlay(gfx, cfg, outFrame, s_latestTelemetry, 0, 1);
-
     return (downloaded > 0);
 }
-
-
 
 bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &statusMsg) {
     initFS();
@@ -502,6 +397,7 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
         memset(s_frameMeta, 0, sizeof(s_frameMeta));
         if (fetchOpenWeatherClouds(gfx, cfg, s_frameMeta[0])) {
             s_totalFrames = 1;
+            renderFrameIndex(gfx, cfg, 0);
             statusMsg = "OK";
             return true;
         } else {
@@ -565,28 +461,63 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
 bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_t frameIdx) {
     if (s_totalFrames == 0 || frameIdx >= s_totalFrames) return false;
 
-    if (s_frameMeta[frameIdx].is_satellite && !s_frameMeta[frameIdx].is_fallback) {
-        // Redraw tactical overlay over existing satellite frame
-        drawTacticalOverlay(gfx, cfg, s_frameMeta[frameIdx], s_latestTelemetry, frameIdx, s_totalFrames);
-        return true;
-    }
-
     gfx.startWrite();
     gfx.fillScreen(gfx.color565(8, 14, 24));
     gfx.endWrite();
 
     bool decoded = false;
 
-    // Render RainViewer 512x512 tile
-    char filePath[32];
-    snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
+    if (s_frameMeta[frameIdx].is_satellite && !s_frameMeta[frameIdx].is_fallback) {
+        // Render 2x2 OpenWeatherMap Cloud Tiles from LittleFS
+        pngle_t *pngle = lgfx_pngle_new();
+        if (pngle) {
+            int startDrawX = s_frameMeta[frameIdx].owm_start_x;
+            int startDrawY = s_frameMeta[frameIdx].owm_start_y;
 
-    File f = LittleFS.open(filePath, "r");
-    if (f) {
-        decoded = gfx.drawPng(&f, -76, -76);
-        f.close();
+            int tileIdx = 0;
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++, tileIdx++) {
+                    int px = startDrawX + dx * 256;
+                    int py = startDrawY + dy * 256;
+
+                    if (px + 256 <= 0 || px >= 360 || py + 256 <= 0 || py >= 360) {
+                        continue;
+                    }
+
+                    char filePath[32];
+                    snprintf(filePath, sizeof(filePath), "/owm_%d.png", tileIdx);
+                    File f = LittleFS.open(filePath, "r");
+                    if (f) {
+                        OwmStreamDecoder dec;
+                        dec.stream = &f;
+                        dec.gfx = &gfx;
+                        dec.base_x = px;
+                        dec.base_y = py;
+
+                        if (lgfx_pngle_prepare(pngle, OwmStreamDecoder::read_data, &dec) == 0) {
+                            gfx.startWrite();
+                            int res = lgfx_pngle_decomp(pngle, owm_png_draw_cb);
+                            gfx.endWrite();
+                            if (res >= 0) decoded = true;
+                        }
+                        f.close();
+                    }
+                }
+            }
+            lgfx_pngle_destroy(pngle);
+        }
     } else {
-        Serial.printf("[RADAR] Frame file %s not found\n", filePath);
+        // Render RainViewer 512x512 tile
+        char filePath[32];
+        snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
+
+        File f = LittleFS.open(filePath, "r");
+        if (f) {
+            decoded = gfx.drawPng(&f, -76, -76);
+            f.close();
+        } else {
+            Serial.printf("[RADAR] Frame file %s not found\n", filePath);
+        }
     }
 
     // Explicitly reset clip rectangle in case PNG decoder altered it
