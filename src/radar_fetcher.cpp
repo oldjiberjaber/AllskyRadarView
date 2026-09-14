@@ -260,45 +260,35 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
 
 #include <lgfx/utility/lgfx_pngle.h>
 
-struct OwmFileDataWrapper : public lgfx::DataWrapper {
-    File *file;
-    OwmFileDataWrapper(File *f) : file(f) {}
-    int read(uint8_t *buf, uint32_t len) override {
-        return file ? file->read(buf, len) : 0;
-    }
-    void skip(int32_t offset) override {
-        if (file) file->seek(file->position() + offset);
-    }
-    bool seek(uint32_t offset) override {
-        return file ? file->seek(offset) : false;
-    }
-    void close() override {
-        if (file) file->close();
-    }
-    int32_t tell() override {
-        return file ? file->position() : 0;
-    }
-};
-
-struct OwmPngDecoder {
-    lgfx::DataWrapper* data;
+struct OwmMemDecoder {
+    const uint8_t* buf;
+    size_t len;
+    size_t pos;
     LovyanGFX* gfx;
     int base_x;
     int base_y;
 
-    static uint32_t read_data(void* self, uint8_t* buf, uint32_t len) {
-        auto d = ((OwmPngDecoder*)self)->data;
-        if (buf) {
-            return d->read(buf, len);
+    static uint32_t read_data(void* self, uint8_t* out_buf, uint32_t req_len) {
+        auto d = (OwmMemDecoder*)self;
+        if (!d || !d->buf) return 0;
+        if (out_buf) {
+            size_t avail = (d->pos < d->len) ? (d->len - d->pos) : 0;
+            size_t to_copy = (req_len < avail) ? req_len : avail;
+            if (to_copy > 0) {
+                memcpy(out_buf, d->buf + d->pos, to_copy);
+                d->pos += to_copy;
+            }
+            return to_copy;
         } else {
-            d->skip(len);
-            return len;
+            d->pos += req_len;
+            if (d->pos > d->len) d->pos = d->len;
+            return req_len;
         }
     }
 };
 
 static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_t div_x, size_t len, const uint8_t* argb) {
-    OwmPngDecoder *ctx = (OwmPngDecoder*)user_data;
+    OwmMemDecoder *ctx = (OwmMemDecoder*)user_data;
     int screen_y = ctx->base_y + (int)y;
     if (screen_y < 0 || screen_y >= 360) return;
 
@@ -331,22 +321,22 @@ static void owm_png_draw_cb(void *user_data, uint32_t x, uint32_t y, uint_fast8_
     }
 }
 
-static bool renderOwmCloudTile(LovyanGFX &gfx, File &f, int px, int py) {
-    OwmFileDataWrapper wrapper(&f);
-
+static bool renderOwmCloudTileMem(LovyanGFX &gfx, const uint8_t *imgBuf, size_t imgLen, int px, int py) {
     pngle_t *pngle = lgfx_pngle_new();
     if (!pngle) {
         Serial.println("[CLOUDS] Failed to allocate pngle");
         return false;
     }
 
-    OwmPngDecoder dec;
-    dec.data = &wrapper;
+    OwmMemDecoder dec;
+    dec.buf = imgBuf;
+    dec.len = imgLen;
+    dec.pos = 0;
     dec.gfx = &gfx;
     dec.base_x = px;
     dec.base_y = py;
 
-    int prep = lgfx_pngle_prepare(pngle, OwmPngDecoder::read_data, &dec);
+    int prep = lgfx_pngle_prepare(pngle, OwmMemDecoder::read_data, &dec);
     if (prep < 0) {
         Serial.printf("[CLOUDS] lgfx_pngle_prepare failed: %d\n", prep);
         lgfx_pngle_destroy(pngle);
@@ -365,7 +355,6 @@ static bool renderOwmCloudTile(LovyanGFX &gfx, File &f, int px, int py) {
     }
     return true;
 }
-
 
 bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame) {
     if (strlen(cfg.owm_api_key) == 0) {
@@ -412,7 +401,13 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
     gfx.endWrite();
 
     uint8_t downloaded = 0;
-    const char* tempPath = "/owm_tile.png";
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.setConnectTimeout(6000);
+    http.setTimeout(10000);
+    http.setReuse(false);
 
     for (int dy = 0; dy < 2; dy++) {
         for (int dx = 0; dx < 2; dx++) {
@@ -429,16 +424,63 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
             snprintf(url, sizeof(url), "https://tile.openweathermap.org/map/clouds_new/%u/%d/%d.png?appid=%s",
                 cfg.zoom, tX, tY, cfg.owm_api_key);
 
-            if (downloadTileToFile(String(url), tempPath)) {
-                File f = LittleFS.open(tempPath, "r");
-                if (f) {
-                    if (renderOwmCloudTile(gfx, f, px, py)) {
-                        downloaded++;
-                    }
-                    f.close();
-                }
-                LittleFS.remove(tempPath);
+            Serial.printf("[CLOUDS] Querying Tile (%d,%d) at pos (%d,%d)...\n", tX, tY, px, py);
+
+            if (!http.begin(client, url)) {
+                Serial.println("[CLOUDS] HTTP begin failed");
+                continue;
             }
+
+            int httpCode = http.GET();
+            if (httpCode != HTTP_CODE_OK) {
+                Serial.printf("[CLOUDS] HTTP GET failed: %d (%s)\n", httpCode, http.errorToString(httpCode).c_str());
+                http.end();
+                continue;
+            }
+
+            int len = http.getSize();
+            if (len <= 500) {
+                Serial.printf("[CLOUDS] Content-Length invalid: %d\n", len);
+                http.end();
+                continue;
+            }
+
+            uint8_t *imgBuf = (uint8_t*)malloc(len);
+            if (!imgBuf) {
+                Serial.printf("[CLOUDS] Failed to allocate %d bytes RAM for tile\n", len);
+                http.end();
+                continue;
+            }
+
+            WiFiClient *stream = http.getStreamPtr();
+            size_t totalRead = 0;
+            unsigned long startMs = millis();
+            while ((http.connected() || stream->available()) && (totalRead < (size_t)len) && (millis() - startMs < 8000)) {
+                size_t avail = stream->available();
+                if (avail > 0) {
+                    size_t toRead = ((size_t)len - totalRead > avail) ? avail : ((size_t)len - totalRead);
+                    int r = stream->read(imgBuf + totalRead, toRead);
+                    if (r > 0) {
+                        totalRead += r;
+                        startMs = millis();
+                    }
+                } else {
+                    delay(5);
+                }
+            }
+            http.end();
+
+            if (totalRead >= (size_t)len) {
+                Serial.printf("[CLOUDS] Downloaded %u bytes in RAM. Decoding...\n", (unsigned int)totalRead);
+                if (renderOwmCloudTileMem(gfx, imgBuf, totalRead, px, py)) {
+                    downloaded++;
+                    Serial.printf("[CLOUDS] Tile rendered successfully at (%d,%d)!\n", px, py);
+                }
+            } else {
+                Serial.printf("[CLOUDS] Incomplete read: %u of %d bytes\n", (unsigned int)totalRead, len);
+            }
+
+            free(imgBuf);
         }
     }
 
@@ -447,6 +489,7 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
 
     return (downloaded > 0);
 }
+
 
 
 bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &statusMsg) {
