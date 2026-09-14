@@ -184,6 +184,7 @@ void RadarFetcher::cleanupCache() {
         snprintf(p, sizeof(p), "/owm_%d.png", i);
         if (LittleFS.exists(p)) LittleFS.remove(p);
     }
+    if (LittleFS.exists("/owm_tile.png")) LittleFS.remove("/owm_tile.png");
 }
 
 bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
@@ -257,7 +258,7 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
     return true;
 }
 
-bool RadarFetcher::fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &outFrame) {
+bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame) {
     if (strlen(cfg.owm_api_key) == 0) {
         Serial.println("[CLOUDS] No OpenWeatherMap API key provided!");
         return false;
@@ -297,25 +298,42 @@ bool RadarFetcher::fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &
     Serial.printf("[CLOUDS] Fetching 2x2 OpenWeatherMap Cloud Tiles (Zoom %u, Origin: %d,%d)...\n", 
         cfg.zoom, startDrawX, startDrawY);
 
+    gfx.startWrite();
+    gfx.fillScreen(gfx.color565(8, 14, 24));
+    gfx.endWrite();
+
     uint8_t downloaded = 0;
+    const char* tempPath = "/owm_tile.png";
+
     for (int dy = 0; dy < 2; dy++) {
         for (int dx = 0; dx < 2; dx++) {
             int tX = startTileX + dx;
             int tY = startTileY + dy;
-            int idx = dy * 2 + dx;
+            int px = startDrawX + dx * 256;
+            int py = startDrawY + dy * 256;
+
+            if (px + 256 <= 0 || px >= 360 || py + 256 <= 0 || py >= 360) {
+                continue;
+            }
 
             char url[256];
             snprintf(url, sizeof(url), "https://tile.openweathermap.org/map/clouds_new/%u/%d/%d.png?appid=%s",
                 cfg.zoom, tX, tY, cfg.owm_api_key);
 
-            char filePath[32];
-            snprintf(filePath, sizeof(filePath), "/owm_%d.png", idx);
-
-            if (downloadTileToFile(String(url), filePath)) {
-                downloaded++;
+            if (downloadTileToFile(String(url), tempPath)) {
+                File f = LittleFS.open(tempPath, "r");
+                if (f) {
+                    gfx.drawPng(&f, px, py);
+                    f.close();
+                    downloaded++;
+                }
+                LittleFS.remove(tempPath);
             }
         }
     }
+
+    gfx.clearClipRect();
+    drawTacticalOverlay(gfx, cfg, outFrame, s_latestTelemetry, 0, 1);
 
     return (downloaded > 0);
 }
@@ -331,9 +349,8 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
     if (cfg.data_product == 1) {
         // OpenWeatherMap Satellite Cloud Cover
         memset(s_frameMeta, 0, sizeof(s_frameMeta));
-        if (fetchOpenWeatherClouds(cfg, s_frameMeta[0])) {
+        if (fetchOpenWeatherClouds(gfx, cfg, s_frameMeta[0])) {
             s_totalFrames = 1;
-            renderFrameIndex(gfx, cfg, 0);
             statusMsg = "OK";
             return true;
         } else {
@@ -397,45 +414,28 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
 bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_t frameIdx) {
     if (s_totalFrames == 0 || frameIdx >= s_totalFrames) return false;
 
+    if (s_frameMeta[frameIdx].is_satellite && !s_frameMeta[frameIdx].is_fallback) {
+        // Redraw tactical overlay over existing satellite frame
+        drawTacticalOverlay(gfx, cfg, s_frameMeta[frameIdx], s_latestTelemetry, frameIdx, s_totalFrames);
+        return true;
+    }
+
     gfx.startWrite();
     gfx.fillScreen(gfx.color565(8, 14, 24));
     gfx.endWrite();
 
     bool decoded = false;
 
-    if (s_frameMeta[frameIdx].is_satellite && !s_frameMeta[frameIdx].is_fallback) {
-        // Render 2x2 OpenWeatherMap Cloud tiles
-        int startX = s_frameMeta[frameIdx].owm_start_x;
-        int startY = s_frameMeta[frameIdx].owm_start_y;
+    // Render RainViewer 512x512 tile
+    char filePath[32];
+    snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
 
-        for (int dy = 0; dy < 2; dy++) {
-            for (int dx = 0; dx < 2; dx++) {
-                int idx = dy * 2 + dx;
-                char filePath[32];
-                snprintf(filePath, sizeof(filePath), "/owm_%d.png", idx);
-
-                File f = LittleFS.open(filePath, "r");
-                if (f) {
-                    int px = startX + dx * 256;
-                    int py = startY + dy * 256;
-                    gfx.drawPng(&f, px, py);
-                    f.close();
-                    decoded = true;
-                }
-            }
-        }
+    File f = LittleFS.open(filePath, "r");
+    if (f) {
+        decoded = gfx.drawPng(&f, -76, -76);
+        f.close();
     } else {
-        // Render RainViewer 512x512 tile
-        char filePath[32];
-        snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
-
-        File f = LittleFS.open(filePath, "r");
-        if (f) {
-            decoded = gfx.drawPng(&f, -76, -76);
-            f.close();
-        } else {
-            Serial.printf("[RADAR] Frame file %s not found\n", filePath);
-        }
+        Serial.printf("[RADAR] Frame file %s not found\n", filePath);
     }
 
     // Explicitly reset clip rectangle in case PNG decoder altered it

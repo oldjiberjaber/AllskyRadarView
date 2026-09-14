@@ -41,7 +41,7 @@ private:
     static bool queryMetadataMulti(const AppConfig &cfg, String &hostUrl, RadarFrameInfo *outFrames, uint8_t maxFrames, uint8_t &outCount);
     static bool queryTelemetry(const AppConfig &cfg, WeatherTelemetry &telemetry);
     static bool downloadTileToFile(const String &url, const char *filePath);
-    static bool fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &outFrame);
+    static bool fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, RadarFrameInfo &outFrame);
     static void cleanupCache();
 };
 
