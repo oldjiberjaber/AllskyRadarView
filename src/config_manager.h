@@ -29,7 +29,8 @@ struct AppConfig {
     float latitude;
     float longitude;
     char location_name[48];
-    uint8_t data_product;          // 0: RainViewer Precipitation Radar, 1: RainViewer Satellite Cloud Cover
+    uint8_t data_product;          // 0: RainViewer Precipitation Radar, 1: OpenWeatherMap Cloud Cover
+    char owm_api_key[40];          // OpenWeatherMap API Key
     uint8_t zoom;                  // 4 to 7 (Default: 6)
     uint8_t color_scheme;          // 0 to 8 (Default: 2 - Universal Blue)
     uint8_t smooth;                // 1: smoothed, 0: raw pixels
@@ -100,6 +101,10 @@ public:
         cfg.data_product = prefs.getUChar("product", 0);
         if (cfg.data_product > 1) cfg.data_product = 0;
 
+        String owmKey = prefs.getString("owm_key", "");
+        strncpy(cfg.owm_api_key, owmKey.c_str(), sizeof(cfg.owm_api_key) - 1);
+        cfg.owm_api_key[sizeof(cfg.owm_api_key) - 1] = '\0';
+
         cfg.zoom = prefs.getUChar("zoom", 6);
         if (cfg.zoom < 1 || cfg.zoom > 7) cfg.zoom = 6;
 
@@ -156,6 +161,7 @@ public:
         prefs.putFloat("lon", cfg.longitude);
         prefs.putString("loc", cfg.location_name);
         prefs.putUChar("product", cfg.data_product);
+        prefs.putString("owm_key", cfg.owm_api_key);
         prefs.putUChar("zoom", cfg.zoom);
         prefs.putUChar("color", cfg.color_scheme);
         prefs.putUChar("smooth", cfg.smooth);

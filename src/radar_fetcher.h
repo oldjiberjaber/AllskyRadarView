@@ -14,6 +14,8 @@ struct RadarFrameInfo {
     bool valid;
     bool is_satellite;
     bool is_fallback;
+    int owm_start_x;
+    int owm_start_y;
 };
 
 struct WeatherTelemetry {
@@ -39,5 +41,6 @@ private:
     static bool queryMetadataMulti(const AppConfig &cfg, String &hostUrl, RadarFrameInfo *outFrames, uint8_t maxFrames, uint8_t &outCount);
     static bool queryTelemetry(const AppConfig &cfg, WeatherTelemetry &telemetry);
     static bool downloadTileToFile(const String &url, const char *filePath);
+    static bool fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &outFrame);
 };
 

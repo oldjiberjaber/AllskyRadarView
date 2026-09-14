@@ -148,17 +148,21 @@ static const char PORTAL_HTML[] PROGMEM = R"rawliteral(
 
     <!-- Data Product & Radar Layer Selection -->
     <div class="card" id="radar-layer-card">
-      <div class="card-title">🌧️ Radar Data Product & Imagery</div>
+      <div class="card-title">🌧️ Radar & Cloud Data Product</div>
       <div class="form-group">
         <label>Layer Source</label>
         <div style="display:flex; gap:8px; align-items:center;">
           <select name="product" id="product" style="flex:1;">
-            <option value="0" {{PROD_0}}>🌧️ RainViewer Precipitation Radar (Default)</option>
-            <option value="1" {{PROD_1}}>☁️ RainViewer Satellite Cloud Cover (Infrared)</option>
+            <option value="0" {{PROD_0}}>🌧️ RainViewer Precipitation Radar (Default - No Key)</option>
+            <option value="1" {{PROD_1}}>☁️ OpenWeatherMap Satellite Cloud Cover (Requires API Key)</option>
           </select>
           <button type="button" id="btn-apply-layer" class="btn" style="width:auto; padding:10px 16px; margin:0; white-space:nowrap; background:linear-gradient(135deg, #00d2ff, #0077ff); color:#fff; font-weight:700;" onclick="applyLayerQuick()">⚡ Switch</button>
         </div>
         <div id="layer-status" style="font-size:12px; color:#00f2a0; margin-top:6px; min-height:16px; text-align:right;"></div>
+      </div>
+      <div class="form-group" style="margin-top:10px;">
+        <label>OpenWeatherMap API Key (Free from openweathermap.org)</label>
+        <input type="password" name="owm_key" id="owm_key" value="{{OWM_KEY}}" placeholder="Enter 32-character OWM API Key">
       </div>
     </div>
 
@@ -466,16 +470,17 @@ function scanWifi() {
 
 function applyLayerQuick() {
   var prod = document.getElementById('product').value;
+  var key = document.getElementById('owm_key') ? encodeURIComponent(document.getElementById('owm_key').value) : '';
   var btn = document.getElementById('btn-apply-layer');
   var status = document.getElementById('layer-status');
   btn.innerText = 'Switching...';
   btn.disabled = true;
   status.innerText = 'Updating radar display...';
-  fetch('/switch-layer?product=' + prod, { method: 'POST' })
+  fetch('/switch-layer?product=' + prod + '&owm_key=' + key, { method: 'POST' })
     .then(r => r.json())
     .then(data => {
       btn.innerText = '✓ Applied';
-      status.innerText = '✓ Switched to ' + (prod == '1' ? 'IR Satellite' : 'Precipitation Radar');
+      status.innerText = '✓ Switched to ' + (prod == '1' ? 'OWM Cloud Cover' : 'Precipitation Radar');
       setTimeout(() => {
         btn.innerText = '⚡ Switch';
         btn.disabled = false;
@@ -611,6 +616,7 @@ void Portal::handleRoot() {
     // Data Product
     html.replace("{{PROD_0}}", activeConfig->data_product == 0 ? "selected" : "");
     html.replace("{{PROD_1}}", activeConfig->data_product == 1 ? "selected" : "");
+    html.replace("{{OWM_KEY}}", String(activeConfig->owm_api_key));
 
     // Telemetry & Units
     html.replace("{{TELEM_CHECKED}}", activeConfig->show_telemetry ? "checked" : "");
@@ -687,6 +693,7 @@ void Portal::handleSave() {
 
     if (server.hasArg("loc")) strncpy(activeConfig->location_name, server.arg("loc").c_str(), sizeof(activeConfig->location_name) - 1);
     if (server.hasArg("product")) activeConfig->data_product = server.arg("product").toInt();
+    if (server.hasArg("owm_key")) strncpy(activeConfig->owm_api_key, server.arg("owm_key").c_str(), sizeof(activeConfig->owm_api_key) - 1);
     if (server.hasArg("units")) activeConfig->temp_units = server.arg("units").toInt();
     activeConfig->show_telemetry = server.hasArg("telem") ? 1 : 0;
 
@@ -764,11 +771,14 @@ void Portal::handleSwitchLayer() {
     }
     if (server.hasArg("product")) {
         activeConfig->data_product = server.arg("product").toInt();
-        ConfigManager::save(*activeConfig);
-        pendingLiveRefresh = true;
-        Serial.printf("[PORTAL] Quick switched layer source to: %s\n", 
-            activeConfig->data_product == 1 ? "SATELLITE CLOUD" : "PRECIPITATION RADAR");
     }
+    if (server.hasArg("owm_key")) {
+        strncpy(activeConfig->owm_api_key, server.arg("owm_key").c_str(), sizeof(activeConfig->owm_api_key) - 1);
+    }
+    ConfigManager::save(*activeConfig);
+    pendingLiveRefresh = true;
+    Serial.printf("[PORTAL] Quick switched layer source to: %s\n", 
+        activeConfig->data_product == 1 ? "OPENWEATHERMAP CLOUD" : "PRECIPITATION RADAR");
     server.send(200, "application/json", "{\"status\":\"ok\",\"product\":" + String(activeConfig->data_product) + "}");
 }
 

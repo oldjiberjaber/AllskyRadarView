@@ -239,6 +239,67 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
     return true;
 }
 
+bool RadarFetcher::fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &outFrame) {
+    if (strlen(cfg.owm_api_key) == 0) {
+        Serial.println("[CLOUDS] No OpenWeatherMap API key provided!");
+        return false;
+    }
+
+    double latRad = (double)cfg.latitude * 0.017453292519943295;
+    double n = pow(2.0, (double)cfg.zoom);
+    double xExact = ((double)cfg.longitude + 180.0) / 360.0 * n;
+    double yExact = (1.0 - asinh(tan(latRad)) / 3.141592653589793) / 2.0 * n;
+
+    int tileX = (int)floor(xExact);
+    int tileY = (int)floor(yExact);
+    int subX = (int)round((xExact - (double)tileX) * 256.0);
+    int subY = (int)round((yExact - (double)tileY) * 256.0);
+
+    int originX = 180 - subX;
+    int originY = 180 - subY;
+
+    int startTileX = (originX > 0) ? tileX - 1 : tileX;
+    int startTileY = (originY > 0) ? tileY - 1 : tileY;
+    int startDrawX = (originX > 0) ? originX - 256 : originX;
+    int startDrawY = (originY > 0) ? originY - 256 : originY;
+
+    outFrame.owm_start_x = startDrawX;
+    outFrame.owm_start_y = startDrawY;
+    outFrame.is_satellite = true;
+    outFrame.is_fallback = false;
+    outFrame.valid = true;
+
+    time_t rawtime = time(nullptr);
+    struct tm frame_tm;
+    localtime_r(&rawtime, &frame_tm);
+    snprintf(outFrame.formatted_time, sizeof(outFrame.formatted_time), "%02d:%02d", frame_tm.tm_hour, frame_tm.tm_min);
+
+    Serial.printf("[CLOUDS] Fetching 2x2 OpenWeatherMap Cloud Tiles (Zoom %u, Origin: %d,%d)...\n", 
+        cfg.zoom, startDrawX, startDrawY);
+
+    uint8_t downloaded = 0;
+    for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+            int tX = startTileX + dx;
+            int tY = startTileY + dy;
+            int idx = dy * 2 + dx;
+
+            char url[256];
+            snprintf(url, sizeof(url), "https://tile.openweathermap.org/map/clouds_new/%u/%d/%d.png?appid=%s",
+                cfg.zoom, tX, tY, cfg.owm_api_key);
+
+            char filePath[32];
+            snprintf(filePath, sizeof(filePath), "/owm_%d.png", idx);
+
+            if (downloadTileToFile(String(url), filePath)) {
+                downloaded++;
+            }
+        }
+    }
+
+    return (downloaded > 0);
+}
+
 bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &statusMsg) {
     initFS();
 
@@ -246,7 +307,23 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
     memset(&s_latestTelemetry, 0, sizeof(s_latestTelemetry));
     queryTelemetry(cfg, s_latestTelemetry);
 
-    // 2. Query metadata
+    // 2. Fetch based on data product
+    if (cfg.data_product == 1) {
+        // OpenWeatherMap Satellite Cloud Cover
+        memset(s_frameMeta, 0, sizeof(s_frameMeta));
+        if (fetchOpenWeatherClouds(cfg, s_frameMeta[0])) {
+            s_totalFrames = 1;
+            renderFrameIndex(gfx, cfg, 0);
+            statusMsg = "OK";
+            return true;
+        } else {
+            Serial.println("[RADAR] OWM Clouds failed or no API key, falling back to RainViewer Radar");
+            s_frameMeta[0].is_satellite = true;
+            s_frameMeta[0].is_fallback = true;
+        }
+    }
+
+    // RainViewer Precipitation Radar
     String hostUrl;
     memset(s_frameMeta, 0, sizeof(s_frameMeta));
     uint8_t targetCount = cfg.anim_frames;
@@ -258,23 +335,18 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
         return false;
     }
 
-    // 3. Download each frame directly to LittleFS flash
     uint8_t downloaded = 0;
     for (uint8_t i = 0; i < metaCount; i++) {
         char tileUrl[384];
-        bool isActualSat = (s_frameMeta[i].is_satellite && !s_frameMeta[i].is_fallback);
-        uint8_t colorId = isActualSat ? 0 : cfg.color_scheme;
-        uint8_t snowVal = isActualSat ? 0 : (cfg.snow ? 1 : 0);
-
         snprintf(tileUrl, sizeof(tileUrl), "%s%s/512/%u/%.4f/%.4f/%u/%u_%u.png",
             hostUrl.c_str(),
             s_frameMeta[i].path,
             cfg.zoom,
             cfg.latitude,
             cfg.longitude,
-            colorId,
+            cfg.color_scheme,
             cfg.smooth ? 1 : 0,
-            snowVal
+            cfg.snow ? 1 : 0
         );
 
         char filePath[32];
@@ -296,9 +368,7 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
     Serial.printf("[RADAR] Caching complete: %u frames saved to LittleFS (Free Heap: %u bytes)\n", 
         s_totalFrames, (unsigned int)ESP.getFreeHeap());
 
-    // 4. Render latest frame immediately
     renderFrameIndex(gfx, cfg, s_totalFrames - 1);
-
     statusMsg = "OK";
     return true;
 }
@@ -306,25 +376,45 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
 bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_t frameIdx) {
     if (s_totalFrames == 0 || frameIdx >= s_totalFrames) return false;
 
-    char filePath[32];
-    snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
-
-    File f = LittleFS.open(filePath, "r");
-    if (!f) {
-        Serial.printf("[RADAR] Frame file %s not found\n", filePath);
-        return false;
-    }
-
     gfx.startWrite();
     gfx.fillScreen(gfx.color565(8, 14, 24));
     gfx.endWrite();
 
-    // Decode coordinate-centered 512x512 PNG at (-76, -76) directly from file stream
-    bool decoded = gfx.drawPng(&f, -76, -76);
-    f.close();
+    bool decoded = false;
 
-    if (!decoded) {
-        Serial.printf("[RADAR] Warning: PNG decode error on frame %u\n", frameIdx);
+    if (s_frameMeta[frameIdx].is_satellite && !s_frameMeta[frameIdx].is_fallback) {
+        // Render 2x2 OpenWeatherMap Cloud tiles
+        int startX = s_frameMeta[frameIdx].owm_start_x;
+        int startY = s_frameMeta[frameIdx].owm_start_y;
+
+        for (int dy = 0; dy < 2; dy++) {
+            for (int dx = 0; dx < 2; dx++) {
+                int idx = dy * 2 + dx;
+                char filePath[32];
+                snprintf(filePath, sizeof(filePath), "/owm_%d.png", idx);
+
+                File f = LittleFS.open(filePath, "r");
+                if (f) {
+                    int px = startX + dx * 256;
+                    int py = startY + dy * 256;
+                    gfx.drawPng(&f, px, py);
+                    f.close();
+                    decoded = true;
+                }
+            }
+        }
+    } else {
+        // Render RainViewer 512x512 tile
+        char filePath[32];
+        snprintf(filePath, sizeof(filePath), "/radar_%u.png", frameIdx);
+
+        File f = LittleFS.open(filePath, "r");
+        if (f) {
+            decoded = gfx.drawPng(&f, -76, -76);
+            f.close();
+        } else {
+            Serial.printf("[RADAR] Frame file %s not found\n", filePath);
+        }
     }
 
     // Explicitly reset clip rectangle in case PNG decoder altered it
@@ -442,11 +532,15 @@ void RadarFetcher::drawTacticalOverlay(LovyanGFX &gfx, const AppConfig &cfg, con
         if (frameInfo.is_fallback) {
             badgeBg = gfx.color565(26, 20, 10);
             badgeBorder = gfx.color565(255, 180, 0);
-            snprintf(topBadge, sizeof(topBadge), "%.10s [SAT N/A]", cfg.location_name);
+            if (strlen(cfg.owm_api_key) == 0) {
+                snprintf(topBadge, sizeof(topBadge), "%.10s [OWM KEY N/A]", cfg.location_name);
+            } else {
+                snprintf(topBadge, sizeof(topBadge), "%.10s [SAT N/A]", cfg.location_name);
+            }
         } else {
-            badgeBg = gfx.color565(24, 12, 34);
-            badgeBorder = gfx.color565(200, 100, 255);
-            snprintf(topBadge, sizeof(topBadge), "%.10s [Z%u SAT]", cfg.location_name, cfg.zoom);
+            badgeBg = gfx.color565(12, 24, 40);
+            badgeBorder = gfx.color565(0, 210, 255);
+            snprintf(topBadge, sizeof(topBadge), "%.10s [Z%u CLOUDS]", cfg.location_name, cfg.zoom);
         }
     } else {
         snprintf(topBadge, sizeof(topBadge), "%.10s [Z%u RADAR]", cfg.location_name, cfg.zoom);
@@ -497,7 +591,7 @@ void RadarFetcher::drawTacticalOverlay(LovyanGFX &gfx, const AppConfig &cfg, con
         gfx.setTextDatum(textdatum_t::middle_center);
 
         char bottomBadge[64];
-        const char* prodLabel = frameInfo.is_satellite ? "SAT" : "RADAR";
+        const char* prodLabel = (frameInfo.is_satellite && !frameInfo.is_fallback) ? "CLOUD" : (frameInfo.is_satellite ? "SAT" : "RADAR");
 
         if (totalFrames > 1) {
             if (frameIdx == totalFrames - 1) {
