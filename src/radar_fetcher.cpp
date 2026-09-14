@@ -438,16 +438,10 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
                 continue;
             }
 
-            int len = http.getSize();
-            if (len <= 500) {
-                Serial.printf("[CLOUDS] Content-Length invalid: %d\n", len);
-                http.end();
-                continue;
-            }
-
-            uint8_t *imgBuf = (uint8_t*)malloc(len);
+            size_t bufCapacity = 65536; // 64 KB buffer for 256x256 PNG
+            uint8_t *imgBuf = (uint8_t*)malloc(bufCapacity);
             if (!imgBuf) {
-                Serial.printf("[CLOUDS] Failed to allocate %d bytes RAM for tile\n", len);
+                Serial.println("[CLOUDS] Failed to allocate RAM buffer for tile");
                 http.end();
                 continue;
             }
@@ -455,10 +449,12 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
             WiFiClient *stream = http.getStreamPtr();
             size_t totalRead = 0;
             unsigned long startMs = millis();
-            while ((http.connected() || stream->available()) && (totalRead < (size_t)len) && (millis() - startMs < 8000)) {
+
+            while ((http.connected() || stream->available()) && (millis() - startMs < 8000)) {
                 size_t avail = stream->available();
                 if (avail > 0) {
-                    size_t toRead = ((size_t)len - totalRead > avail) ? avail : ((size_t)len - totalRead);
+                    size_t toRead = (avail > (bufCapacity - totalRead)) ? (bufCapacity - totalRead) : avail;
+                    if (toRead == 0) break; // Buffer full
                     int r = stream->read(imgBuf + totalRead, toRead);
                     if (r > 0) {
                         totalRead += r;
@@ -470,17 +466,18 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
             }
             http.end();
 
-            if (totalRead >= (size_t)len) {
+            if (totalRead >= 500) {
                 Serial.printf("[CLOUDS] Downloaded %u bytes in RAM. Decoding...\n", (unsigned int)totalRead);
                 if (renderOwmCloudTileMem(gfx, imgBuf, totalRead, px, py)) {
                     downloaded++;
                     Serial.printf("[CLOUDS] Tile rendered successfully at (%d,%d)!\n", px, py);
                 }
             } else {
-                Serial.printf("[CLOUDS] Incomplete read: %u of %d bytes\n", (unsigned int)totalRead, len);
+                Serial.printf("[CLOUDS] Download failed or too small: %u bytes\n", (unsigned int)totalRead);
             }
 
             free(imgBuf);
+
         }
     }
 
