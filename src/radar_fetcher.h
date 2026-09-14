@@ -42,5 +42,6 @@ private:
     static bool queryTelemetry(const AppConfig &cfg, WeatherTelemetry &telemetry);
     static bool downloadTileToFile(const String &url, const char *filePath);
     static bool fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &outFrame);
+    static void cleanupCache();
 };
 

@@ -172,6 +172,20 @@ bool RadarFetcher::queryTelemetry(const AppConfig &cfg, WeatherTelemetry &teleme
     return true;
 }
 
+void RadarFetcher::cleanupCache() {
+    initFS();
+    for (int i = 0; i < MAX_RADAR_FRAMES; i++) {
+        char p[32];
+        snprintf(p, sizeof(p), "/radar_%d.png", i);
+        if (LittleFS.exists(p)) LittleFS.remove(p);
+    }
+    for (int i = 0; i < 4; i++) {
+        char p[32];
+        snprintf(p, sizeof(p), "/owm_%d.png", i);
+        if (LittleFS.exists(p)) LittleFS.remove(p);
+    }
+}
+
 bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
     initFS();
 
@@ -194,6 +208,10 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
         Serial.printf("[RADAR] Tile download error: %d (%s)\n", httpCode, http.errorToString(httpCode).c_str());
         http.end();
         return false;
+    }
+
+    if (LittleFS.exists(filePath)) {
+        LittleFS.remove(filePath);
     }
 
     File f = LittleFS.open(filePath, "w");
@@ -244,6 +262,8 @@ bool RadarFetcher::fetchOpenWeatherClouds(const AppConfig &cfg, RadarFrameInfo &
         Serial.println("[CLOUDS] No OpenWeatherMap API key provided!");
         return false;
     }
+
+    cleanupCache();
 
     double latRad = (double)cfg.latitude * 0.017453292519943295;
     double n = pow(2.0, (double)cfg.zoom);
@@ -324,6 +344,7 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
     }
 
     // RainViewer Precipitation Radar
+    cleanupCache();
     String hostUrl;
     memset(s_frameMeta, 0, sizeof(s_frameMeta));
     uint8_t targetCount = cfg.anim_frames;
