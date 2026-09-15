@@ -177,14 +177,14 @@ void RadarFetcher::cleanupCache() {
     for (int i = 0; i < MAX_RADAR_FRAMES; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/radar_%d.png", i);
-        LittleFS.remove(p);
+        if (LittleFS.exists(p)) LittleFS.remove(p);
     }
     for (int i = 0; i < 4; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/owm_%d.png", i);
-        LittleFS.remove(p);
+        if (LittleFS.exists(p)) LittleFS.remove(p);
     }
-    LittleFS.remove("/owm_tile.png");
+    if (LittleFS.exists("/owm_tile.png")) LittleFS.remove("/owm_tile.png");
 }
 
 bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
@@ -231,8 +231,12 @@ bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
             size_t toRead = (avail > sizeof(tempBuf)) ? sizeof(tempBuf) : avail;
             int r = stream->read(tempBuf, toRead);
             if (r > 0) {
-                f.write(tempBuf, r);
-                totalBytes += r;
+                size_t written = f.write(tempBuf, r);
+                if (written != (size_t)r) {
+                    Serial.printf("[RADAR] LittleFS write error (disk full? written %u of %u)\n", (unsigned int)written, (unsigned int)r);
+                    break;
+                }
+                totalBytes += written;
                 startMs = millis();
             }
         } else {
@@ -353,6 +357,8 @@ bool RadarFetcher::fetchOpenWeatherClouds(LovyanGFX &gfx, const AppConfig &cfg, 
 
     Serial.printf("[CLOUDS] Fetching 2x2 OpenWeatherMap Cloud Tiles (Zoom %u, Origin: %d,%d, Free Heap: %u)...\n", 
         cfg.zoom, startDrawX, startDrawY, (unsigned int)ESP.getFreeHeap());
+
+    cleanupCache();
 
     uint8_t downloaded = 0;
     int tileIdx = 0;
