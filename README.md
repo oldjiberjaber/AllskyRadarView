@@ -4,18 +4,23 @@
 [![Release](https://img.shields.io/github/v/release/oldjiberjaber/AllskyRadarView)](https://github.com/oldjiberjaber/AllskyRadarView/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**AllskyRadarView** is a unified, high-performance ESP32-C3 firmware capable of driving **Dual GC9B72 360×360 round LCD displays** (or a single display in radar, allsky, or timed carousel mode).
+**AllskyRadarView** is a unified, high-performance firmware for **ESP32-S3** and **ESP32-C3** microcontrollers capable of driving **Dual GC9B72 360×360 round LCD displays** (or a single display in radar, allsky, or timed carousel mode).
 
-It bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar & Satellite Motion Loops** (via RainViewer & Open-Meteo) into a tactical round observatory HUD.
+It seamlessly bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar & Satellite Motion Loops** (via RainViewer & Open-Meteo) into a tactical round observatory HUD.
 
 ---
 
-## 📷 Display Preview
+## 📷 Hardware Showcase
 
-| Tactical Weather Radar Scope | Allsky Night Sky Camera View |
-|:---:|:---:|
-| ![Radar Scope](assets/radar_view.jpg) | ![Allsky Camera](assets/allsky_view.jpg) |
-| *Live RainViewer radar, Open-Meteo telemetry & wind vector HUD* | *MQTT Allsky camera feed with capture timestamp* |
+### 🌟 Dual Display Observatory Desk Station
+![Dual Display Station](assets/dual_display.png)
+*Screen 1 (Left): Live MQTT Allsky camera feed & capture timestamp. Screen 2 (Right): Live precipitation radar motion loop with tactical telemetry HUD & wind vector.*
+
+### 🔍 Single Display Modes
+| Allsky Night Sky Camera View | Live Satellite Cloud Coverage (OWM) | Tactical Weather Radar Scope |
+|:---:|:---:|:---:|
+| ![Allsky Camera](assets/allsky_single.jpg) | ![Satellite Clouds](assets/satellite_clouds.jpg) | ![Radar Scope](assets/radar_view.jpg) |
+| *MQTT Allsky camera feed* | *OpenWeatherMap silvery cloud gradient* | *RainViewer live precipitation radar* |
 
 ---
 
@@ -26,16 +31,19 @@ It bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar
   - **Single Radar**: Single display dedicated to full radar motion loop and weather scope.
   - **Single Allsky**: Single display dedicated to the MQTT Allsky Camera feed.
   - **Timed Carousel**: Single display smoothly alternating between Allsky and Radar every *N* seconds (configurable from 5s to 300s).
+- 🚀 **Hardware Acceleration & Zero-Flicker Animation**:
+  - **ESP32-S3 Double-Buffering**: Uses 2MB PSRAM for off-screen 360×360 16-bit compositing and atomic 80 MHz DMA transfer for 100% flicker-free radar animations.
+  - **ESP32-C3 Stream Optimization**: Direct stream-decoding via LittleFS with $<180\text{ KB}$ SRAM footprint.
 - 🌧️ **Live Radar & Satellite Cloud Coverage**:
   - Multi-frame history animation (3, 5, or 8 frames covering 20–80 minutes of storm motion).
-  - Stream-decoded via LittleFS and LovyanGFX PNGLE with **zero heap fragmentation** and full DMA acceleration.
+  - Stream-decoded via LittleFS and LovyanGFX PNGLE with **zero heap fragmentation**.
   - Switch on-the-fly between **RainViewer Precipitation Radar** and **OpenWeatherMap Satellite Cloud Coverage** with density-mapped silvery cloud gradient rendering.
   - Persistent LittleFS grid caching for zero-latency, zero-API-cost screen switches in Carousel mode.
 - 🧭 **Tactical Weather Telemetry**:
   - Real-time temperature, humidity, and 16-point cardinal wind speed & direction (`SW`, `ENE`, `NNE`) from Open-Meteo.
-  - Compass needle vector on the radar scope.
+  - Directional compass wind arrow vector on the radar scope.
 - ⚡ **Zero-Lag Shared SPI Bus**:
-  - Both GC9B72 360×360 panels operate on the ESP32-C3 FSPI bus clocked at **80 MHz** with hardware DMA.
+  - Both GC9B72 360×360 panels operate on a single shared 80 MHz SPI bus with hardware arbitration.
 - 🌐 **Comprehensive Web Configuration Portal & Captive AP**:
   - Interactive **Leaflet.js map picker** for instant GPS geolocation and scope radius visualization.
   - Wi-Fi network scanner.
@@ -48,7 +56,24 @@ It bridges your local **Allsky Camera** (via MQTT) and real-time **Weather Radar
 
 ## 📐 Hardware Wiring Pinout
 
-AllskyRadarView uses an **ESP32-C3 SuperMini** driving one or two **GC9B72 360×360 round SPI LCDs**.
+AllskyRadarView supports both **ESP32-S3** (e.g. Waveshare ESP32-S3-Zero / SuperMini) and **ESP32-C3 SuperMini** driving one or two **GC9B72 360×360 round SPI LCDs**.
+
+### ESP32-S3 Pinout (Recommended for 100% Zero-Flicker PSRAM Double-Buffering)
+
+| ESP32-S3 Pin | Screen 1 (Allsky / Main) | Screen 2 (Radar Scope) | Description |
+|---|---|---|---|
+| **GPIO 4** | `SCL` / `SCLK` | `SCL` / `SCLK` | Shared 80 MHz SPI Clock |
+| **GPIO 3** | `SDA` / `MOSI` | `SDA` / `MOSI` | Shared SPI MOSI Data |
+| **GPIO 10** | `DC` | `DC` | Shared Data / Command |
+| **GPIO 5** | `RST` | `RST` | Shared Hardware Reset |
+| **GPIO 6** | `BLK` / `BL` | `BLK` / `BL` | Shared Backlight PWM (44.1 kHz LEDC) |
+| **GPIO 1** | **`CS` (Chip Select 1)** | — | Primary Screen Chip Select |
+| **GPIO 2** | — | **`CS` (Chip Select 2)** | Secondary Screen Chip Select |
+| **GPIO 0** | Button | — | Boot Button (Short press: Refresh / Long press: AP mode) |
+| **3V3 / 5V** | `VCC` | `VCC` | Power Supply |
+| **GND** | `GND` | `GND` | Common Ground |
+
+### ESP32-C3 Pinout
 
 | ESP32-C3 Pin | Screen 1 (Allsky / Main) | Screen 2 (Radar Scope) | Description |
 |---|---|---|---|
@@ -74,10 +99,14 @@ AllskyRadarView uses an **ESP32-C3 SuperMini** driving one or two **GC9B72 360×
 git clone https://github.com/oldjiberjaber/AllskyRadarView.git
 cd AllskyRadarView
 
-# Flash via USB COM Port
+# Flash ESP32-S3 via USB COM Port
+pio run -e esp32-s3-usb -t upload
+
+# Or Flash ESP32-C3 via USB COM Port
 pio run -e esp32-c3-usb -t upload
 
-# Or Flash wirelessly via Over-The-Air (OTA)
+# Wireless Over-The-Air (OTA) Flashing
+pio run -e esp32-s3-ota -t upload
 pio run -e esp32-c3-ota -t upload
 ```
 
@@ -107,12 +136,6 @@ AllskyRadarView connects directly to your MQTT broker to subscribe to and displa
 ## 🔭 Allsky 360×360 Thumbnail MQTT Pipeline
 
 This setup automatically generates a square 360×360 thumbnail on every completed exposure and publishes the binary payload to an MQTT broker for consumption by AllskyRadarView, Home Assistant, and downstream dashboards.
-
-### Overview
-
-1. **Trigger:** `indi-allsky` runs an **Image Post-Save Hook** immediately after a new image exposure is processed and saved.
-2. **Transform:** A local bash script uses ImageMagick (`convert`) to center-crop and scale the newly captured image down to 360×360 pixels.
-3. **Publish:** The script uses `mosquitto_pub` to broadcast the raw binary JPEG directly to a dedicated MQTT topic.
 
 ### Prerequisites
 
@@ -156,7 +179,6 @@ convert "$INPUT_FILE" \
     "$OUTPUT_FILE"
 
 # Publish binary JPEG to MQTT broker
-# Add -u "$MQTT_USER" -P "$MQTT_PASS" if authentication is enabled
 mosquitto_pub \
     -h "$BROKER_IP" \
     -p "$BROKER_PORT" \
@@ -195,27 +217,8 @@ file /tmp/test_thumb.jpg
 # Expected output: JPEG image data, ... 360x360
 ```
 
-**Home Assistant Consumer Definition (`configuration.yaml`):**
-
-```yaml
-mqtt:
-  image:
-    - name: "Allsky 360 Thumbnail"
-      image_topic: "allsky/image/thumbnail"
-      content_type: "image/jpeg"
-```
-
----
-
-## 🛠️ Architecture & Memory Strategy
-
-The ESP32-C3 features ~320 KB SRAM. Decoding full PNG and JPEG images simultaneously requires strict memory architecture:
-- **LittleFS Stream Decoding**: Incoming PNG radar tiles and JPEG Allsky images are written sequentially to LittleFS and decoded via file stream callbacks (`drawPng(&file)` and `drawJpg(&file)`), preventing RAM fragmentation and leaving $>180\text{ KB}$ contiguous free memory.
-- **DCT Scaling**: Incoming Allsky JPEG images are prescaled in hardware DCT down to the target 360×360 panel size.
-
 ---
 
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for details.
-

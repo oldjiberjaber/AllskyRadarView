@@ -45,26 +45,41 @@ jobs:
       - name: Build Firmware Targets
         run: |
           pio run -e esp32-c3-usb
-          pio run -e esp32-c3-ota
+          pio run -e esp32-s3-usb
 
       - name: Package Firmware Binaries
         run: |
           mkdir -p release_assets
-          BUILD_DIR=".pio/build/esp32-c3-usb"
 
-          cp "$BUILD_DIR/firmware.bin" release_assets/AllskyRadarView-firmware.bin
-          cp "$BUILD_DIR/partitions.bin" release_assets/partitions.bin
-          cp "$BUILD_DIR/bootloader.bin" release_assets/bootloader.bin
+          # ESP32-C3
+          BUILD_C3=".pio/build/esp32-c3-usb"
+          cp "$BUILD_C3/firmware.bin" release_assets/AllskyRadarView-ESP32C3-firmware.bin
+          cp "$BUILD_C3/partitions.bin" release_assets/AllskyRadarView-ESP32C3-partitions.bin
+          cp "$BUILD_C3/bootloader.bin" release_assets/AllskyRadarView-ESP32C3-bootloader.bin
 
-          # Merge into a single 0x0 flashable factory binary
           python -m esptool --chip esp32c3 merge_bin \
-            -o release_assets/AllskyRadarView-factory-merged.bin \
+            -o release_assets/AllskyRadarView-ESP32C3-factory-merged.bin \
             --flash_mode qio \
             --flash_freq 80m \
             --flash_size 4MB \
-            0x0000 "$BUILD_DIR/bootloader.bin" \
-            0x8000 "$BUILD_DIR/partitions.bin" \
-            0x10000 "$BUILD_DIR/firmware.bin"
+            0x0000 "$BUILD_C3/bootloader.bin" \
+            0x8000 "$BUILD_C3/partitions.bin" \
+            0x10000 "$BUILD_C3/firmware.bin"
+
+          # ESP32-S3
+          BUILD_S3=".pio/build/esp32-s3-usb"
+          cp "$BUILD_S3/firmware.bin" release_assets/AllskyRadarView-ESP32S3-firmware.bin
+          cp "$BUILD_S3/partitions.bin" release_assets/AllskyRadarView-ESP32S3-partitions.bin
+          cp "$BUILD_S3/bootloader.bin" release_assets/AllskyRadarView-ESP32S3-bootloader.bin
+
+          python -m esptool --chip esp32s3 merge_bin \
+            -o release_assets/AllskyRadarView-ESP32S3-factory-merged.bin \
+            --flash_mode qio \
+            --flash_freq 80m \
+            --flash_size 4MB \
+            0x0000 "$BUILD_S3/bootloader.bin" \
+            0x8000 "$BUILD_S3/partitions.bin" \
+            0x10000 "$BUILD_S3/firmware.bin"
 
           ls -lh release_assets/
 
@@ -79,10 +94,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release_assets/AllskyRadarView-factory-merged.bin
-            release_assets/AllskyRadarView-firmware.bin
-            release_assets/bootloader.bin
-            release_assets/partitions.bin
+            release_assets/AllskyRadarView-ESP32C3-factory-merged.bin
+            release_assets/AllskyRadarView-ESP32C3-firmware.bin
+            release_assets/AllskyRadarView-ESP32C3-bootloader.bin
+            release_assets/AllskyRadarView-ESP32C3-partitions.bin
+            release_assets/AllskyRadarView-ESP32S3-factory-merged.bin
+            release_assets/AllskyRadarView-ESP32S3-firmware.bin
+            release_assets/AllskyRadarView-ESP32S3-bootloader.bin
+            release_assets/AllskyRadarView-ESP32S3-partitions.bin
           generate_release_notes: true
           draft: false
           prerelease: false

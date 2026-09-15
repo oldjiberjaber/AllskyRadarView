@@ -458,12 +458,31 @@ bool RadarFetcher::fetchAllFrames(LovyanGFX &gfx, const AppConfig &cfg, String &
     return true;
 }
 
+static LGFX_Sprite* s_frameBuffer = nullptr;
+static bool s_bufferAttempted = false;
+
 bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_t frameIdx) {
     if (s_totalFrames == 0 || frameIdx >= s_totalFrames) return false;
 
-    gfx.startWrite();
-    gfx.fillScreen(gfx.color565(8, 14, 24));
-    gfx.endWrite();
+    if (!s_bufferAttempted) {
+        s_bufferAttempted = true;
+        s_frameBuffer = new LGFX_Sprite();
+        s_frameBuffer->setColorDepth(16);
+        s_frameBuffer->setPsram(true);
+        if (!s_frameBuffer->createSprite(360, 360)) {
+            delete s_frameBuffer;
+            s_frameBuffer = nullptr;
+            Serial.println("[RADAR] PSRAM/Sprite frame buffer creation failed, using direct render");
+        } else {
+            Serial.printf("[RADAR] Double-buffer sprite (360x360 16-bit) initialized successfully! (Free Heap: %u, Free PSRAM: %u)\n",
+                          (unsigned int)ESP.getFreeHeap(), (unsigned int)ESP.getFreePsram());
+        }
+    }
+
+    LovyanGFX &target = (s_frameBuffer != nullptr) ? static_cast<LovyanGFX&>(*s_frameBuffer) : gfx;
+
+    target.startWrite();
+    target.fillScreen(target.color565(8, 14, 24));
 
     bool decoded = false;
 
@@ -490,14 +509,12 @@ bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_
                     if (f) {
                         OwmStreamDecoder dec;
                         dec.stream = &f;
-                        dec.gfx = &gfx;
+                        dec.gfx = &target;
                         dec.base_x = px;
                         dec.base_y = py;
 
                         if (lgfx_pngle_prepare(pngle, OwmStreamDecoder::read_data, &dec) == 0) {
-                            gfx.startWrite();
                             int res = lgfx_pngle_decomp(pngle, owm_png_draw_cb);
-                            gfx.endWrite();
                             if (res >= 0) decoded = true;
                         }
                         f.close();
@@ -513,7 +530,7 @@ bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_
 
         File f = LittleFS.open(filePath, "r");
         if (f) {
-            decoded = gfx.drawPng(&f, -76, -76);
+            decoded = target.drawPng(&f, -76, -76);
             f.close();
         } else {
             Serial.printf("[RADAR] Frame file %s not found\n", filePath);
@@ -521,10 +538,17 @@ bool RadarFetcher::renderFrameIndex(LovyanGFX &gfx, const AppConfig &cfg, uint8_
     }
 
     // Explicitly reset clip rectangle in case PNG decoder altered it
-    gfx.clearClipRect();
+    target.clearClipRect();
 
-    // Overlay tactical HUD, telemetry, and frame progress indicators with isolated transaction
-    drawTacticalOverlay(gfx, cfg, s_frameMeta[frameIdx], s_latestTelemetry, frameIdx, s_totalFrames);
+    // Overlay tactical HUD, telemetry, and frame progress indicators
+    drawTacticalOverlay(target, cfg, s_frameMeta[frameIdx], s_latestTelemetry, frameIdx, s_totalFrames);
+
+    target.endWrite();
+
+    if (s_frameBuffer) {
+        // Push the full double-buffered frame to the target panel in a single atomic DMA burst
+        s_frameBuffer->pushSprite(&gfx, 0, 0);
+    }
 
     return decoded;
 }

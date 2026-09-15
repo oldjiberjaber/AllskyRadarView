@@ -11,7 +11,26 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
-#define BOOT_BUTTON_PIN 9
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  #define BOOT_BUTTON_PIN 0
+  #define LCD_PIN_SCLK    4
+  #define LCD_PIN_MOSI    3
+  #define LCD_PIN_DC      10
+  #define LCD_PIN_CS1     1
+  #define LCD_PIN_CS2     2
+  #define LCD_PIN_RST     5
+  #define LCD_PIN_BL      6
+#else
+  #define BOOT_BUTTON_PIN 9
+  #define LCD_PIN_SCLK    4
+  #define LCD_PIN_MOSI    3
+  #define LCD_PIN_DC      10
+  #define LCD_PIN_CS1     1
+  #define LCD_PIN_CS2     2
+  #define LCD_PIN_RST     0
+  #define LCD_PIN_BL      5
+#endif
+
 #define APP_VERSION "v1.1.0"
 #define GITHUB_URL  "github.com/oldjiberjaber/AllskyRadarView"
 
@@ -33,8 +52,8 @@ public:
     LGFX_Screen(int cs_pin, int rst_pin = -1, int bl_pin = -1, int pwm_chan = 0) {
         {
             auto cfg = _panel_instance.config();
-            cfg.pin_cs           = cs_pin;    // Screen 1: GPIO 1, Screen 2: GPIO 2
-            cfg.pin_rst          = rst_pin;   // RST: GPIO 0 (or -1)
+            cfg.pin_cs           = cs_pin;    // Screen 1: CS1, Screen 2: CS2
+            cfg.pin_rst          = rst_pin;   // Hardware RST (or -1)
             cfg.pin_busy         = -1;
             cfg.panel_width      = 360;
             cfg.panel_height     = 360;
@@ -57,7 +76,7 @@ public:
 
         if (bl_pin >= 0) {
             auto cfg = _light_instance.config();
-            cfg.pin_bl      = bl_pin;         // BLK = GPIO 5
+            cfg.pin_bl      = bl_pin;         // Shared Backlight PWM
             cfg.invert      = false;
             cfg.freq        = 44100;
             cfg.pwm_channel = pwm_chan;
@@ -70,23 +89,23 @@ public:
 
     static void initBus() {
         auto cfg = s_shared_bus.config();
-        cfg.spi_host   = SPI2_HOST;       // ESP32-C3 FSPI
+        cfg.spi_host   = SPI2_HOST;       // FSPI (SPI2)
         cfg.spi_mode   = 0;               // SPI mode 0
         cfg.freq_write = 80000000;        // 80 MHz high-speed SPI clock
         cfg.freq_read  = 16000000;
-        cfg.pin_sclk   = 4;               // SCLK = GPIO 4
-        cfg.pin_mosi   = 3;               // MOSI = GPIO 3
+        cfg.pin_sclk   = LCD_PIN_SCLK;    // SCLK = GPIO 4
+        cfg.pin_mosi   = LCD_PIN_MOSI;    // MOSI = GPIO 3
         cfg.pin_miso   = -1;              // Not connected
-        cfg.pin_dc     = 10;              // DC = GPIO 10
+        cfg.pin_dc     = LCD_PIN_DC;      // DC = GPIO 10
         cfg.dma_channel = SPI_DMA_CH_AUTO; // Hardware DMA channel
         s_shared_bus.config(cfg);
     }
 };
 
-// Screen 1 (CS = GPIO 1, RST = GPIO 0, BL = GPIO 5)
-LGFX_Screen gfx_screen1(1, 0, 5, 0);
-// Screen 2 (CS = GPIO 2, shared reset/backlight handled by Screen 1)
-LGFX_Screen gfx_screen2(2, -1, -1, 1);
+// Screen 1 (CS1, RST, BL, PWM chan 0)
+LGFX_Screen gfx_screen1(LCD_PIN_CS1, LCD_PIN_RST, LCD_PIN_BL, 0);
+// Screen 2 (CS2, shared reset/backlight handled by Screen 1)
+LGFX_Screen gfx_screen2(LCD_PIN_CS2, -1, -1, 1);
 
 // State management
 static unsigned long lastRadarRefresh = 0;
