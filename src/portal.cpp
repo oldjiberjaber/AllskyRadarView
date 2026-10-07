@@ -365,9 +365,9 @@ function initOrUpdateMap() {
 
   if (!map) {
     map = L.map('map').setView([lat, lon], mapZoom);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-      maxZoom: 18
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19
     }).addTo(map);
 
     marker = L.marker([lat, lon], { draggable: true }).addTo(map);

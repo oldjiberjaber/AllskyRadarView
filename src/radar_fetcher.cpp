@@ -177,14 +177,14 @@ void RadarFetcher::cleanupCache() {
     for (int i = 0; i < MAX_RADAR_FRAMES; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/radar_%d.png", i);
-        if (LittleFS.exists(p)) LittleFS.remove(p);
+        LittleFS.remove(p);
     }
     for (int i = 0; i < 4; i++) {
         char p[32];
         snprintf(p, sizeof(p), "/owm_%d.png", i);
-        if (LittleFS.exists(p)) LittleFS.remove(p);
+        LittleFS.remove(p);
     }
-    if (LittleFS.exists("/owm_tile.png")) LittleFS.remove("/owm_tile.png");
+    LittleFS.remove("/owm_tile.png");
 }
 
 bool RadarFetcher::downloadTileToFile(const String &url, const char *filePath) {
